@@ -10,20 +10,57 @@
 // It is made of the settings page's own pieces (SettingsLayout.tsx), rows
 // in a card, so it reads like the rest of the app and invents nothing.
 // The teams are the rooms, each with its lead; a room is where a hired
-// team works, and the place to open it is the sidebar's. Archived agents
+// team works. New team makes one here, with its lead and members, and each
+// agent's card moves it between teams or makes it a team's lead; the
+// server keeps the reporting lines in step only where they already
+// matched the team (server/registry.ts). Archived agents
 // wait at the bottom, each a click from coming back; deleting one for good
 // stays behind the sidebar's archive, where the confirm names what goes.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Crown, RotateCcw, Search, Users } from "@/components/icons";
+import { ArrowRight, Crown, MessageCircle, MoreHorizontal, Plus, RotateCcw, Search, Settings, Users } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AgentAvatar } from "./Avatar";
+import { useModelLabel } from "./NewRoomDialog";
+import { NewTeamDialog } from "./NewTeamDialog";
 import { SavedMark, SettingRow, SettingsEmpty, SettingsGroup, SettingsPageHeader, SettingsSelect, SettingsSkeleton } from "./SettingsLayout";
 import { api, useStore, type Bot } from "@/state/store";
-import { agentMatches, leadChoices, reportingRows, unplacedAgents, type OrgAgent, type OrgView } from "@/lib/registry";
+import {
+  agentMatches,
+  leadChoices,
+  moveCarriesLine,
+  reportingRows,
+  teamsOf,
+  teamsToJoin,
+  unplacedAgents,
+  type OrgAgent,
+  type OrgTeam,
+  type OrgView,
+} from "@/lib/registry";
+import { MAX_MEMBERS } from "@/lib/roomEdit";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+
+/** Skills shown on a card before the rest fold into a count. */
+const SKILLS_SHOWN = 4;
+
+/** What a card's menu asks the page to do. */
+interface CardActions {
+  onSave: (path: string, body: Record<string, unknown>) => Promise<boolean>;
+  onOpen: (id: string) => void;
+  onSettings: (id: string) => void;
+  onMakeLead: (team: OrgTeam, agent: OrgAgent) => void;
+  onMove: (agent: OrgAgent) => void;
+}
 
 function useOrg() {
   const [view, setView] = useState<OrgView | null>(null);
@@ -62,6 +99,30 @@ export function AgentsPage() {
   };
 
   const open = (id: string) => dispatch({ type: "select", id });
+  const [newTeam, setNewTeam] = useState(false);
+  const [moving, setMoving] = useState<OrgAgent | null>(null);
+  // A team action answers with the chart as it now stands, or with the
+  // reason it was refused, which the dialog that asked shows itself.
+  const act = async (path: string, body: Record<string, unknown>): Promise<string | null> => {
+    try {
+      const done: { org: OrgView } = await api(path, { method: "POST", body: JSON.stringify(body) });
+      setView(done.org);
+      setError(null);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const actions: CardActions = {
+    onSave: save,
+    onOpen: open,
+    onSettings: (id) => {
+      dispatch({ type: "select", id });
+      dispatch({ type: "toggleSettings", open: true });
+    },
+    onMakeLead: (team, agent) => void act(`/api/registry/teams/${team.id}/lead`, { agentId: agent.id }).then((refused) => refused && setError(refused)),
+    onMove: setMoving,
+  };
   const shown = (a: OrgAgent) => agentMatches(a, bots.get(a.id)?.skills ?? [], query);
   const lines = view ? reportingRows(view).filter((row) => shown(row.agent)) : [];
   const loose = view ? unplacedAgents(view).filter(shown) : [];
@@ -73,7 +134,18 @@ export function AgentsPage() {
     <main className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[880px] px-4 pb-20 pt-9 max-md:pt-16 sm:px-6 lg:px-10">
-          <SettingsPageHeader title={t("agentsPage.title")} description={t("agentsPage.description")} />
+          <SettingsPageHeader
+            title={t("agentsPage.title")}
+            description={t("agentsPage.description")}
+            actions={
+              view && view.agents.length >= 2 ? (
+                <Button onClick={() => setNewTeam(true)}>
+                  <Plus size={15} aria-hidden />
+                  {t("agentsPage.newTeam")}
+                </Button>
+              ) : undefined
+            }
+          />
 
           {!view && !error && <SettingsSkeleton rows={4} />}
           {error && (
@@ -125,7 +197,7 @@ export function AgentsPage() {
               {lines.length > 0 && (
                 <SettingsGroup title={t("agentsPage.reportingLines")}>
                   {lines.map(({ agent, depth }) => (
-                    <AgentRow key={agent.id} agent={agent} bot={bots.get(agent.id)} depth={depth} view={view} onSave={save} onOpen={open} />
+                    <AgentRow key={agent.id} agent={agent} bot={bots.get(agent.id)} depth={depth} view={view} actions={actions} />
                   ))}
                 </SettingsGroup>
               )}
@@ -136,7 +208,7 @@ export function AgentsPage() {
                   description={anyLead ? undefined : t("agentsPage.notPlacedLine")}
                 >
                   {loose.map((agent) => (
-                    <AgentRow key={agent.id} agent={agent} bot={bots.get(agent.id)} depth={0} view={view} onSave={save} onOpen={open} />
+                    <AgentRow key={agent.id} agent={agent} bot={bots.get(agent.id)} depth={0} view={view} actions={actions} />
                   ))}
                 </SettingsGroup>
               )}
@@ -216,6 +288,28 @@ export function AgentsPage() {
           )}
         </div>
       </div>
+      {newTeam && (
+        <NewTeamDialog
+          onClose={() => setNewTeam(false)}
+          onMade={(org) => {
+            setView(org);
+            setError(null);
+            setNewTeam(false);
+          }}
+        />
+      )}
+      {moving && view && (
+        <MoveTeamDialog
+          agent={moving}
+          view={view}
+          onClose={() => setMoving(null)}
+          onMove={async (from, to) => {
+            const refused = await act(`/api/registry/agents/${moving.id}/team`, { from: from?.id ?? null, to: to?.id ?? null });
+            if (!refused) setMoving(null);
+            return refused;
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -225,16 +319,18 @@ function AgentRow({
   bot,
   depth,
   view,
-  onSave,
-  onOpen,
+  actions,
 }: {
   agent: OrgAgent;
   bot: Bot | undefined;
   depth: number;
   view: OrgView;
-  onSave: (path: string, body: Record<string, unknown>) => Promise<boolean>;
-  onOpen: (id: string) => void;
+  actions: CardActions;
 }) {
+  const { onSave, onOpen } = actions;
+  const modelLabel = useModelLabel();
+  const teams = teamsOf(view, agent.id);
+  const skills = bot?.skills ?? [];
   const [line, setLine] = useState(agent.contactFor);
   const [saved, setSaved] = useState(false);
   useEffect(() => setLine(agent.contactFor), [agent.contactFor]);
@@ -267,29 +363,61 @@ function AgentRow({
         </span>
       }
       description={
-        <span className="block" style={{ paddingLeft: Math.min(depth, 6) * 20 + 32 }}>
-          {agent.title || t("agentsPage.noRole")}
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" style={{ paddingLeft: Math.min(depth, 6) * 20 + 32 }}>
+          <span className="min-w-0 truncate">{agent.title || t("agentsPage.noRole")}</span>
+          {bot && (
+            <span className="max-w-[160px] shrink-0 truncate rounded-md bg-muted px-1.5 py-px text-caption text-muted-foreground" title={t("agentsPage.model")}>
+              {modelLabel(bot)}
+            </span>
+          )}
+          {teams.map((team) => (
+            <span key={team.id} className="inline-flex max-w-[160px] shrink-0 items-center gap-1 rounded-md border px-1.5 py-px text-caption text-muted-foreground">
+              {team.lead === agent.id && <Crown size={10} aria-label={t("agentsPage.leadsTeam", { team: team.name })} />}
+              <span className="truncate">{team.name}</span>
+            </span>
+          ))}
         </span>
       }
       control={
-        <label className="flex items-center gap-2 text-small text-muted-foreground">
-          {t("agentsPage.reportsTo")}
-          <SettingsSelect
-            aria-label={t("agentsPage.reportsToFor", { name: agent.name })}
-            value={agent.lead ?? ""}
-            onChange={(e) => void onSave(path, { lead: e.target.value || null })}
-            className="w-[168px]"
-          >
-            <option value="">{t("agentsPage.nobody")}</option>
-            {choices.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </SettingsSelect>
-        </label>
+        <div className="flex items-center gap-1.5">
+          <label className="flex items-center gap-2 text-small text-muted-foreground">
+            {t("agentsPage.reportsTo")}
+            <SettingsSelect
+              aria-label={t("agentsPage.reportsToFor", { name: agent.name })}
+              value={agent.lead ?? ""}
+              onChange={(e) => void onSave(path, { lead: e.target.value || null })}
+              className="w-[168px]"
+            >
+              <option value="">{t("agentsPage.nobody")}</option>
+              {choices.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </SettingsSelect>
+          </label>
+          <AgentMenu agent={agent} view={view} teams={teams} actions={actions} />
+        </div>
       }
     >
+      {skills.length > 0 && (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-1"
+          style={{ paddingLeft: Math.min(depth, 6) * 20 + 32 }}
+          aria-label={t("agentsPage.skillsOf", { name: agent.name })}
+        >
+          {skills.slice(0, SKILLS_SHOWN).map((skill) => (
+            <span key={skill} className="max-w-[180px] truncate rounded-full bg-brand-soft px-2 py-px text-caption text-foreground/80">
+              {skill}
+            </span>
+          ))}
+          {skills.length > SKILLS_SHOWN && (
+            <span className="text-caption tabular-nums text-muted-foreground" title={skills.slice(SKILLS_SHOWN).join(", ")}>
+              {t("agentsPage.moreSkills", { count: skills.length - SKILLS_SHOWN })}
+            </span>
+          )}
+        </div>
+      )}
       <div className="mt-3 flex items-center gap-2" style={{ paddingLeft: Math.min(depth, 6) * 20 + 32 }}>
         <Input
           value={line}
@@ -306,5 +434,136 @@ function AgentRow({
         <SavedMark on={saved} />
       </div>
     </SettingRow>
+  );
+}
+
+/** A card's menu: the agent's conversation and settings, then the team
+ * actions, which are only offered where they can be done. */
+function AgentMenu({ agent, view, teams, actions }: { agent: OrgAgent; view: OrgView; teams: OrgTeam[]; actions: CardActions }) {
+  const crownable = teams.filter((team) => team.lead !== agent.id);
+  const movable = teams.length > 0 || teamsToJoin(view, agent.id, MAX_MEMBERS).length > 0;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon" variant="ghost" className="size-8" aria-label={t("agentsPage.moreFor", { name: agent.name })}>
+          <MoreHorizontal size={16} aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[220px]">
+        <DropdownMenuItem onSelect={() => actions.onOpen(agent.id)}>
+          <MessageCircle aria-hidden />
+          {t("agentsPage.openChat")}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => actions.onSettings(agent.id)}>
+          <Settings aria-hidden />
+          {t("agentsPage.openSettings")}
+        </DropdownMenuItem>
+        {(crownable.length > 0 || movable) && <DropdownMenuSeparator />}
+        {crownable.map((team) => (
+          <DropdownMenuItem key={team.id} onSelect={() => actions.onMakeLead(team, agent)}>
+            <Crown aria-hidden />
+            <span className="truncate">{t("agentsPage.makeLeadOf", { team: team.name })}</span>
+          </DropdownMenuItem>
+        ))}
+        {movable && (
+          <DropdownMenuItem onSelect={() => actions.onMove(agent)}>
+            <ArrowRight aria-hidden />
+            {teams.length ? t("agentsPage.moveToTeam") : t("agentsPage.addToTeam")}
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Moving an agent between teams: which team it leaves, when it is in
+ * more than one, and which it joins, or none. What happens to its
+ * reporting line is said before it is done, by the server's own rule.
+ */
+function MoveTeamDialog({
+  agent,
+  view,
+  onClose,
+  onMove,
+}: {
+  agent: OrgAgent;
+  view: OrgView;
+  onClose: () => void;
+  onMove: (from: OrgTeam | null, to: OrgTeam | null) => Promise<string | null>;
+}) {
+  const teams = teamsOf(view, agent.id);
+  const choices = teamsToJoin(view, agent.id, MAX_MEMBERS);
+  const [fromId, setFromId] = useState(teams[0]?.id ?? "");
+  const [toId, setToId] = useState(choices[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
+  const from = teams.find((team) => team.id === fromId) ?? null;
+  const to = choices.find((team) => team.id === toId) ?? null;
+  const byId = new Map(view.agents.map((a) => [a.id, a]));
+  const carries = moveCarriesLine(view, agent.id, from, to);
+  const tooSmall = Boolean(from && from.members.length <= 2);
+  const nothing = !from && !to;
+  const line = carries
+    ? to?.lead
+      ? t("agentsPage.moveLineFollows", { name: agent.name, lead: byId.get(to.lead)?.name ?? "" })
+      : t("agentsPage.moveLineClears", { name: agent.name })
+    : t("agentsPage.moveLineStays", { name: agent.name });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="w-[calc(100vw-24px)] max-w-[460px]">
+        <DialogTitle className="text-heading">{t("agentsPage.moveTitle", { name: agent.name })}</DialogTitle>
+        <DialogDescription>{t("agentsPage.moveLine")}</DialogDescription>
+        <div className="mt-2 grid gap-3">
+          {teams.length > 0 && (
+            <label className="grid gap-1.5 text-body font-medium text-muted-foreground">
+              {t("agentsPage.moveFrom")}
+              <SettingsSelect value={fromId} onChange={(e) => setFromId(e.target.value)} aria-label={t("agentsPage.moveFrom")}>
+                {teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+                {teams.length > 0 && choices.length > 0 && <option value="">{t("agentsPage.stayInAll")}</option>}
+              </SettingsSelect>
+            </label>
+          )}
+          <label className="grid gap-1.5 text-body font-medium text-muted-foreground">
+            {t("agentsPage.moveTo")}
+            <SettingsSelect value={toId} onChange={(e) => setToId(e.target.value)} aria-label={t("agentsPage.moveTo")}>
+              {choices.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+              {teams.length > 0 && <option value="">{t("agentsPage.noTeam")}</option>}
+            </SettingsSelect>
+          </label>
+          <p className="text-pretty text-small leading-relaxed text-muted-foreground">
+            {tooSmall && from ? t("agentsPage.moveTooSmall", { team: from.name }) : line}
+          </p>
+          {refused && (
+            <p role="alert" className="text-pretty text-small text-destructive">
+              {refused}
+            </p>
+          )}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            disabled={busy || nothing || tooSmall}
+            onClick={async () => {
+              setBusy(true);
+              setRefused(await onMove(from, to));
+              setBusy(false);
+            }}
+          >
+            {t("agentsPage.move")}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

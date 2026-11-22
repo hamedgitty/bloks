@@ -22778,6 +22778,29 @@ function memberSays(
  * spending limit holds here too. A room open to everyone that nobody had
  * shared yet becomes shared the moment a member speaks in it: from now on
  * other people read its replies, so the room's rules for that apply. */
+/** Who leads a room among the agents in it who can answer: the crowned
+ * one while it is here, the most senior otherwise. What a topic's rules
+ * and a team's moves mean by the lead. */
+function presentLead(blok: BlokRecord): string | null {
+  const awake = blok.memberIds.map((id) => store.bot(id)).filter((b): b is BotRecord => Boolean(b && !b.archivedAt));
+  return leadOf(awake, blok.leadId)?.id ?? null;
+}
+
+/** A room made and said: the roster as its first line, so the transcript
+ * explains itself later, and the frame every screen adds it from. The one
+ * way a room is opened, by POST /api/bloks and by a new team. */
+function openRoom(name: string, memberIds: string[], withYouAt: number, leadId: string | null): BlokRecord {
+  const blok = bloks.create(name, memberIds, withYouAt, leadId);
+  const names = memberIds.map((id) => store.bot(id)!.name).join(", ");
+  store.appendMessage(blok.id, {
+    role: "bot",
+    kind: "text",
+    text: `Room opened with ${names}. Mention someone with @name, or just talk and everyone answers.`,
+  });
+  broadcast({ kind: "blok", blok });
+  return blok;
+}
+
 /** The owner, or an agent in the room as its lead or not, as a topic's
  * rules know them. */
 function topicActorIn(blok: BlokRecord, botId?: string): TopicActor {
@@ -31895,15 +31918,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       const lead = readLeadId(body, memberIds, Boolean(asAgent));
       if (!lead.ok) return json(res, lead.status, { error: lead.error });
-      const blok = bloks.create(clamp(body.name, MAX_NAME_CHARS) ?? "", memberIds, asAgent ? 0 : Date.now(), lead.leadId ?? null);
-      // open with the roster so the transcript explains itself later
-      const names = memberIds.map((id) => store.bot(id)!.name).join(", ");
-      store.appendMessage(blok.id, {
-        role: "bot",
-        kind: "text",
-        text: `Room opened with ${names}. Mention someone with @name, or just talk and everyone answers.`,
-      });
-      broadcast({ kind: "blok", blok });
+      const blok = openRoom(clamp(body.name, MAX_NAME_CHARS) ?? "", memberIds, asAgent ? 0 : Date.now(), lead.leadId ?? null);
       return json(res, 201, { blok: { ...blok, messages: store.messagesFor(blok.id) } });
     }
     m = path.match(/^\/api\/bloks\/([\w-]+)$/);
@@ -33874,6 +33889,111 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       orgChart.put(next);
       return json(res, 200, orgViewNow());
+    }
+    // ── teams, which are rooms, from the Agents page (GitHub 525) ──
+    // A new team, an agent moved between teams, and a team's lead. The
+    // owner's alone, like the chart beside them (/api/registry is on the
+    // agent command line's NEVER list): the reporting lines follow a team
+    // only where the owner asked or they already matched it
+    // (server/registry.ts, withTeamLead, afterTeamMove, afterHandover).
+    if (method === "POST" && path === "/api/registry/teams") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "teams are the owner's to make" });
+      const body = await readBody(req);
+      const memberIds = Array.isArray(body.memberIds)
+        ? [...new Set((body.memberIds as unknown[]).filter((id): id is string => typeof id === "string" && roomMayHold(id) && !store.bot(id)!.archivedAt))]
+        : [];
+      if (memberIds.length < 2) return json(res, 400, { error: "a team needs at least two agents" });
+      if (memberIds.length > MAX_MEMBERS) return json(res, 400, { error: `a team holds at most ${MAX_MEMBERS} agents` });
+      const name = clamp(body.name, MAX_NAME_CHARS);
+      if (!name) return json(res, 400, { error: "a team needs a name" });
+      const lead = readLeadId(body, memberIds, false);
+      if (!lead.ok) return json(res, lead.status, { error: lead.error });
+      const answers = body.answers === undefined ? undefined : roomAnswers(body.answers);
+      if (body.answers !== undefined && !answers) return json(res, 400, { error: "answers is everyone, lead or auto" });
+      // who leads it, as the room will read it, decided before anything is
+      // made, so a reporting line that cannot be drawn refuses the lot
+      const members = memberIds.map((id) => store.bot(id)!);
+      const leader = leadOf(members, lead.leadId ?? null);
+      let chart = orgChart.get();
+      if (body.reportToLead === true && leader) {
+        const placed = reg.withTeamLead(chart, memberIds, leader.id, reg.rosterOf(registryAgents()));
+        if ("error" in placed) return json(res, 400, { error: placed.error });
+        chart = placed.registry;
+      }
+      let blok = openRoom(name, memberIds, Date.now(), lead.leadId ?? null);
+      if (answers && answers !== "everyone") blok = bloks.patch(blok.id, { answers }) ?? blok;
+      broadcast({ kind: "blok", blok });
+      if (chart !== orgChart.get()) orgChart.put(chart);
+      return json(res, 201, { blok: { ...blok, messages: store.messagesFor(blok.id) }, org: orgViewNow() });
+    }
+    m = path.match(/^\/api\/registry\/agents\/([\w-]+)\/team$/);
+    if (m && method === "POST") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "moving agents between teams is the owner's" });
+      const agent = store.bot(m[1]);
+      if (!agent || !roomMayHold(agent.id)) return json(res, 404, { error: "no such agent" });
+      if (agent.archivedAt) return json(res, 400, { error: `${agent.name} is archived. Restore it first.` });
+      const body = await readBody(req);
+      const roomAt = (key: "from" | "to") => {
+        const id = body[key];
+        if (id === null || id === undefined || id === "") return { ok: true as const, room: null };
+        const room = typeof id === "string" ? bloks.get(id) : null;
+        return room && !room.archived ? { ok: true as const, room } : { ok: false as const };
+      };
+      const from = roomAt("from");
+      const to = roomAt("to");
+      if (!from.ok || !to.ok) return json(res, 404, { error: "no such team" });
+      if (!from.room && !to.room) return json(res, 400, { error: "say which team it leaves, joins, or both" });
+      if (from.room && to.room && from.room.id === to.room.id) return json(res, 400, { error: `${agent.name} is already in ${to.room.name}` });
+      if (from.room && !from.room.memberIds.includes(agent.id)) return json(res, 400, { error: `${agent.name} is not in ${from.room.name}` });
+      if (to.room?.memberIds.includes(agent.id)) return json(res, 400, { error: `${agent.name} is already in ${to.room.name}` });
+      if (to.room && to.room.memberIds.length >= MAX_MEMBERS) return json(res, 400, { error: `${to.room.name} already holds ${MAX_MEMBERS} agents, the most a team can` });
+      if (from.room && from.room.memberIds.length <= 2) {
+        return json(res, 400, { error: `${from.room.name} would be left with one agent. A team needs two: add someone to it first, or archive it` });
+      }
+      // the leads as they stand before the move, which is what the line
+      // the owner drew was drawn to
+      const fromLead = from.room ? presentLead(from.room) : null;
+      const toLead = to.room ? presentLead(to.room) : null;
+      const moved = reg.afterTeamMove(orgChart.get(), agent.id, fromLead, toLead, reg.rosterOf(registryAgents()));
+      const who = hostName();
+      if (from.room) {
+        const left = bloks.patch(from.room.id, { memberIds: from.room.memberIds.filter((id) => id !== agent.id) });
+        if (left) {
+          broadcast({ kind: "blok", blok: left });
+          const notice = store.appendMessage(left.id, { role: "bot", kind: "notice", event: true, text: to.room ? `${who} moved ${agent.name} to ${to.room.name}.` : `${who} took ${agent.name} out of this team.` });
+          broadcast({ kind: "message", threadId: left.id, message: notice });
+        }
+      }
+      if (to.room) {
+        const joined = bloks.patch(to.room.id, { memberIds: [...to.room.memberIds, agent.id] });
+        if (joined) {
+          broadcast({ kind: "blok", blok: joined });
+          const notice = store.appendMessage(joined.id, { role: "bot", kind: "notice", event: true, text: from.room ? `${who} moved ${agent.name} here from ${from.room.name}.` : `${who} added ${agent.name} to this team.` });
+          broadcast({ kind: "message", threadId: joined.id, message: notice });
+        }
+      }
+      if (moved.followed) orgChart.put(moved.registry);
+      return json(res, 200, { ok: true, followed: moved.followed, org: orgViewNow() });
+    }
+    m = path.match(/^\/api\/registry\/teams\/([\w-]+)\/lead$/);
+    if (m && method === "POST") {
+      if (asAgent || (local ? namesMember() : !ownerDevice)) return json(res, 403, { error: "a team's lead is the owner's to choose" });
+      const room = bloks.get(m[1]);
+      if (!room || room.archived) return json(res, 404, { error: "no such team" });
+      const body = await readBody(req);
+      const agent = typeof body.agentId === "string" ? store.bot(body.agentId) : null;
+      if (!agent || !room.memberIds.includes(agent.id)) return json(res, 400, { error: `the lead must be one of ${room.name}'s agents` });
+      if (agent.archivedAt) return json(res, 400, { error: `${agent.name} is archived. Restore it first.` });
+      const previous = presentLead(room);
+      if (previous === agent.id && room.leadId === agent.id) return json(res, 200, { ok: true, followed: false, org: orgViewNow() });
+      const handed = reg.afterHandover(orgChart.get(), room.memberIds, previous, agent.id);
+      const crowned = bloks.patch(room.id, { leadId: agent.id });
+      if (!crowned) return json(res, 404, { error: "no such team" });
+      broadcast({ kind: "blok", blok: crowned });
+      const notice = store.appendMessage(crowned.id, { role: "bot", kind: "notice", event: true, text: `${hostName()} made ${agent.name} the lead of this team.` });
+      broadcast({ kind: "message", threadId: crowned.id, message: notice });
+      if (handed.followed) orgChart.put(handed.registry);
+      return json(res, 200, { ok: true, followed: handed.followed, org: orgViewNow() });
     }
     if (method === "GET" && path === "/api/team-library") {
       return json(res, 200, { teams: teamLibrary.list() });

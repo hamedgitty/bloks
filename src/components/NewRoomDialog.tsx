@@ -586,12 +586,15 @@ export function RoomPreview({
   lead,
   onLead,
   modelLabel,
+  unnamed,
 }: {
   name: string;
   chosen: Bot[];
   lead: Bot | null;
   onLead: (id: string) => void;
   modelLabel: (bot: Bot) => string;
+  /** What it is called before it has a name; a room unless said. */
+  unnamed?: string;
 }) {
   const rest = chosen.filter((a) => a.id !== lead?.id);
   const ready = chosen.length >= 2;
@@ -602,7 +605,7 @@ export function RoomPreview({
           <Users size={14} />
         </span>
         <span className={cn("min-w-0 truncate text-lead font-semibold tracking-tight", name ? "text-foreground" : "text-muted-foreground")}>
-          {name || t("newRoomDialog.yourRoom")}
+          {name || unnamed || t("newRoomDialog.yourRoom")}
         </span>
       </div>
 

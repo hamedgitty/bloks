@@ -14,6 +14,8 @@ import {
   MAX_CONTACT_FOR_CHARS,
   RegistryStore,
   acrossRefusal,
+  afterHandover,
+  afterTeamMove,
   chainOfCommand,
   contactLine,
   contactsFor,
@@ -27,11 +29,12 @@ import {
   routeMessage,
   withContactFor,
   withLead,
+  withTeamLead,
   type Registry,
   type RegistryAgent,
 } from "../server/registry.ts";
 import { allows } from "../server/agent-cli.ts";
-import { agentMatches, leadChoices, reportingRows, unplacedAgents } from "../src/lib/registry.ts";
+import { agentMatches, leadChoices, moveCarriesLine, reportingRows, teamsOf, teamsToJoin, unplacedAgents } from "../src/lib/registry.ts";
 
 // Two teams. Marlow leads Ada and Atlas, and Ada has a worker, Pip.
 // Juno leads Quill. Solo is on its own.
@@ -274,6 +277,10 @@ describe("who may change it", () => {
       ["PATCH", "/api/registry/agents/marlow"],
       ["GET", "/api/registry/contacts"],
       ["POST", "/api/agent/registry"],
+      // teams from the Agents page are the owner's too
+      ["POST", "/api/registry/teams"],
+      ["POST", "/api/registry/agents/ada/team"],
+      ["POST", "/api/registry/teams/room-1/lead"],
     ] as const) {
       assert.equal(allows("ada", method, path).ok, false, `${method} ${path}`);
     }
@@ -316,4 +323,74 @@ test("the registry file is written for the owner alone", { skip: process.platfor
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("teams and the reporting lines (GitHub 525)", () => {
+  test("a new team's members are put under its lead, the lead left where it is", () => {
+    const placed = withTeamLead(chart({ leads: {} }), ["solo", "quill", "atlas"], "solo", roster);
+    assert.ok("registry" in placed);
+    assert.deepEqual(placed.registry.leads, { quill: "solo", atlas: "solo" });
+  });
+
+  test("a team whose lead is under one of its members is refused whole", () => {
+    // Marlow leads Ada; a team led by Ada that puts Marlow under her loops
+    const placed = withTeamLead(chart(), ["ada", "marlow", "solo"], "ada", roster);
+    assert.ok("error" in placed);
+    assert.match(placed.error, /already under/);
+  });
+
+  test("a move carries the line only when it pointed at the lead of the team left", () => {
+    // Atlas reports to Marlow, who leads the team Atlas leaves: now Juno
+    const moved = afterTeamMove(chart(), "atlas", "marlow", "juno", roster);
+    assert.equal(moved.followed, true);
+    assert.equal(moved.registry.leads.atlas, "juno");
+    // into no team, or a team with no lead, the line goes
+    const out = afterTeamMove(chart(), "atlas", "marlow", null, roster);
+    assert.equal(out.followed, true);
+    assert.equal("atlas" in out.registry.leads, false);
+    // Pip reports to Ada, not to the lead of the team it leaves: untouched
+    const kept = afterTeamMove(chart(), "pip", "marlow", "juno", roster);
+    assert.equal(kept.followed, false);
+    assert.equal(kept.registry.leads.pip, "ada");
+  });
+
+  test("a move never puts an agent under itself or into a loop", () => {
+    // Marlow joins a team led by Ada, who is under Marlow: the line stays
+    const looped = afterTeamMove(chart({ leads: { ...LEADS, marlow: "juno" } }), "marlow", "juno", "ada", roster);
+    assert.equal(looped.followed, false);
+    assert.equal(looped.registry.leads.marlow, "juno");
+  });
+
+  test("a new lead takes the old one's place where the team reported to it", () => {
+    // Marlow's team is Marlow, Ada and Atlas, and Marlow reports to Juno
+    const before = chart({ leads: { ...LEADS, marlow: "juno" } });
+    const handed = afterHandover(before, ["marlow", "ada", "atlas"], "marlow", "ada");
+    assert.equal(handed.followed, true);
+    assert.equal(handed.registry.leads.atlas, "ada");
+    assert.equal(handed.registry.leads.ada, "juno");
+    assert.equal(handed.registry.leads.marlow, "ada");
+    // Pip, outside the team, still reports to Ada as before
+    assert.equal(handed.registry.leads.pip, "ada");
+  });
+
+  test("a team the chart never mirrored keeps its lines when the crown moves", () => {
+    const handed = afterHandover(chart(), ["solo", "quill"], "solo", "quill");
+    assert.equal(handed.followed, false);
+    assert.deepEqual(handed.registry.leads, LEADS);
+  });
+
+  test("the page says what a move will do, by the same rule", () => {
+    const teams = [
+      { id: "core", name: "Core", lead: "marlow", members: ["marlow", "ada", "atlas"] },
+      { id: "growth", name: "Growth", lead: "juno", members: ["juno", "quill"] },
+    ];
+    const view = orgView(chart(), AGENTS, teams.map((t) => ({ id: t.id, name: t.name, memberIds: t.members, leadId: t.lead })));
+    assert.deepEqual(teamsOf(view, "atlas").map((t) => t.id), ["core"]);
+    assert.deepEqual(teamsToJoin(view, "atlas", 8).map((t) => t.id), ["growth"]);
+    assert.deepEqual(teamsToJoin(view, "atlas", 2).map((t) => t.id), []);
+    const [core, growth] = view.teams;
+    assert.equal(moveCarriesLine(view, "atlas", core, growth), true);
+    assert.equal(moveCarriesLine(view, "pip", null, growth), false);
+    assert.equal(moveCarriesLine(view, "quill", growth, core), true);
+  });
 });

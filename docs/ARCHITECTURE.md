@@ -2283,6 +2283,32 @@ counts the rest and opens the Agents page, whose last group lists the
 archived agents with Restore beside each (the same `restoreBot` the
 sidebar's archive uses; deleting for good stays there).
 
+A team stays a room. A separate teams store was the other way, and it
+would have held a second list of members and a second lead beside the
+room's own, to be kept in step by hand; rooms already have the members,
+the crown and the place the team works. So New team on the Agents page
+(`src/components/NewTeamDialog.tsx`, the room dialog's picker and
+drawing) is `POST /api/registry/teams`: the room opened by the same
+`openRoom` as `POST /api/bloks`, answering through its lead unless the
+owner picks otherwise, and with "Members report to the lead" on, each
+member put under that lead in `registry.json` (`withTeamLead`). A line
+that cannot be drawn (the lead is under one of them) refuses the lot
+before the room is made. Each agent's card on the page shows its model,
+skills and teams, and its menu opens its conversation and settings,
+makes it a team's lead, or moves it. Moving is `POST
+/api/registry/agents/:id/team` with the team it leaves and the one it
+joins, either of them none; a team is never left with one agent, never
+given a ninth, and both rooms say what happened in a notice. A new lead
+is `POST /api/registry/teams/:room/lead`, the room's crown. The
+reporting lines follow those two only where they already matched the
+team (`afterTeamMove`, `afterHandover` in `server/registry.ts`): an
+agent that reported to the lead of the team it left reports to the lead
+of the one it joins, and a new lead takes the old one's place, the old
+one under it, when the team reported to the old one. Otherwise only the
+rooms change. All three routes are the owner's, refused to an agent
+(`/api/registry` is on NEVER), a member, and anyone but the owner's own
+devices, with the same check as the chart's.
+
 ## Goals
 
 A conversation can be given a goal, and then keeps working turn after

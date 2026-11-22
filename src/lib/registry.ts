@@ -81,3 +81,26 @@ export function agentMatches(agent: OrgAgent, skills: readonly string[], query: 
   const hay = [agent.name, agent.title, agent.contactFor, ...skills].join(" ").toLowerCase();
   return words.every((w) => hay.includes(w));
 }
+
+/** The teams an agent is in, by name. */
+export function teamsOf(view: OrgView, id: string): OrgTeam[] {
+  return view.teams.filter((team) => team.members.includes(id)).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Where an agent could be moved to: every team it is not in yet and that
+ * has a seat left. */
+export function teamsToJoin(view: OrgView, id: string, max: number): OrgTeam[] {
+  return view.teams.filter((team) => !team.members.includes(id) && team.members.length < max).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Whether moving an agent carries its reporting line with it, as the
+ * server decides it (server/registry.ts, afterTeamMove): only when it
+ * reports to the lead of the team it leaves, and then to the lead of the
+ * team it joins, or to nobody when that has none.
+ */
+export function moveCarriesLine(view: OrgView, id: string, from: OrgTeam | null, to: OrgTeam | null): boolean {
+  const agent = view.agents.find((a) => a.id === id);
+  if (!agent?.lead || !from?.lead || agent.lead !== from.lead) return false;
+  return (to?.lead ?? null) !== from.lead;
+}

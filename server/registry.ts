@@ -217,6 +217,83 @@ export function forgetAgent(registry: Registry, id: string): Registry {
   return { ...registry, leads, contactFor };
 }
 
+// ── teams and the reporting lines ──────────────────────────────────────
+//
+// A team is a room (server/bloks.ts): its members and its lead, crowned or
+// the most senior. The reporting lines above are the owner's chart, and
+// they need not match the rooms. When the owner works on a team from the
+// Agents page, the lines follow only where they already matched it, or
+// where the owner asked for them to: a new team's members may be put
+// under its lead, an agent moved between teams changes lead only if it
+// reported to the lead of the team it left, and a new team lead takes the
+// old one's place only if the team reported to the old one.
+
+/**
+ * The registry with each of `members` reporting to `lead`, the lead
+ * itself left where it is; or why not, before anything is changed.
+ */
+export function withTeamLead(registry: Registry, members: readonly string[], lead: string, roster: Roster): { registry: Registry } | { error: string } {
+  let next = registry;
+  for (const id of members) {
+    if (id === lead) continue;
+    const placed = withLead(next, id, lead, roster);
+    if ("error" in placed) return placed;
+    next = placed.registry;
+  }
+  return { registry: next };
+}
+
+/**
+ * The registry after `id` moves from a team led by `fromLead` to one led
+ * by `toLead` (null for no team, or a team with no lead). Its line moves
+ * only when it reported to the lead of the team it left, and never onto
+ * itself or into a loop; otherwise it stays as the owner set it.
+ */
+export function afterTeamMove(
+  registry: Registry,
+  id: string,
+  fromLead: string | null,
+  toLead: string | null,
+  roster: Roster,
+): { registry: Registry; followed: boolean } {
+  if (!fromLead || registry.leads[id] !== fromLead || fromLead === toLead) return { registry, followed: false };
+  if (!toLead || toLead === id) {
+    const placed = withLead(registry, id, null, roster);
+    return "error" in placed ? { registry, followed: false } : { registry: placed.registry, followed: true };
+  }
+  const placed = withLead(registry, id, toLead, roster);
+  return "error" in placed ? { registry, followed: false } : { registry: placed.registry, followed: true };
+}
+
+/**
+ * The registry after `next` takes over a team from `previous`. Only when
+ * some of the team reported to the previous lead: then they report to the
+ * new one, the new one reports wherever the previous one did, and the
+ * previous one reports to the new one. A team the chart never mirrored
+ * keeps its lines, and only the crown moves.
+ */
+export function afterHandover(
+  registry: Registry,
+  team: readonly string[],
+  previous: string | null,
+  next: string,
+): { registry: Registry; followed: boolean } {
+  if (!previous || previous === next) return { registry, followed: false };
+  const under = team.filter((id) => id !== previous && registry.leads[id] === previous);
+  if (!under.length) return { registry, followed: false };
+  const leads = { ...registry.leads };
+  for (const id of under) if (id !== next) leads[id] = next;
+  const above = registry.leads[previous];
+  if (above && above !== next) leads[next] = above;
+  else delete leads[next];
+  leads[previous] = next;
+  // the whole change or none of it: a loop anywhere leaves the lines alone
+  const candidate = { ...registry, leads };
+  const read = normalizeRegistry(candidate);
+  if (Object.keys(read.leads).length !== Object.keys(leads).length) return { registry, followed: false };
+  return { registry: read, followed: true };
+}
+
 /** Why a message may go, or the lead it has to go through. */
 export type Route =
   | { ok: true; why: "open" | "self" | "no lead" | "up" | "team" | "room" | "exchange" }
