@@ -6657,6 +6657,8 @@
   "telegramSection.voiceTranscribedByWhisper": "音声メッセージは、あなたのWhisperサーバーが文字に起こします。",
   "telegramSection.youOwn": "{handle}のオーナーはあなたです",
   "telegramSection.yourBot": "あなたのボット",
+  "terminal.agentBadge": "{name} が開始",
+  "terminal.agentTab": "{name} が {command} を実行するために開いたタブです。表示内容を読み取れます。",
   "terminal.closeNamed": "{title}を閉じる",
   "terminal.closeQuestion": "{title}を閉じますか？",
   "terminal.commandStillRunning": "{command}はまだ実行中です。タブを閉じると終了します。",

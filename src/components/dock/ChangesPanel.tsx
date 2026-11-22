@@ -115,7 +115,7 @@ export function ChangesPanel({ placeKey, threadId, files, shown }: { placeKey: s
 
   // an agent's `bloks dock show changes <file> --line`
   useEffect(() => {
-    if (focus?.panel !== "changes" || focus.target.kind !== "change") return;
+    if (focus?.panel !== "changes" || focus.target?.kind !== "change") return;
     const target = focus.target;
     const file = files?.find((f) => f.path === target.path);
     setScope("conversation");

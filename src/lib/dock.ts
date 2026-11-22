@@ -394,11 +394,11 @@ export interface DockAsk {
   target?: DockTarget;
 }
 
-/** The newest target asked for in each conversation, for its panel to
- * act on once; `n` tells one ask from the next. */
+/** The newest ask in each conversation, and what it named in its panel,
+ * for that panel to act on once; `n` tells one ask from the next. */
 export interface DockFocus {
   panel: DockPanel;
-  target: DockTarget;
+  target?: DockTarget;
   n: number;
 }
 const focus = new Map<string, DockFocus>();
@@ -441,7 +441,7 @@ export const dock = {
     const room = { width, typingInDock: typingInDock(), declinedIn: declined.get(key)?.get(ask.panel), turn };
     if (!mayShow(key, placeIn(read(), key), room)) return false;
     declined.get(key)?.delete(ask.panel);
-    if (ask.target) focus.set(key, { panel: ask.panel, target: ask.target, n: ++focusCount });
+    focus.set(key, { panel: ask.panel, ...(ask.target ? { target: ask.target } : {}), n: ++focusCount });
     const next = ask.target?.kind === "doc"
       ? openDoc(read(), key, { botId: ask.target.botId, name: ask.target.name, mime: ask.target.mime, size: ask.target.size })
       : showPanel(read(), key, ask.panel);

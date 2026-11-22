@@ -20,6 +20,7 @@ import { MessageComponent } from "./Gallery";
 import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
+import { showTerminalTab } from "./Terminal";
 import { BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { Activity, FileDiff, Folder, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
@@ -28,7 +29,7 @@ import { FilesPanel } from "./dock/FilesPanel";
 import { ChangesPanel, useLaneChanges } from "./dock/ChangesPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
-import { chatKey, dock, placeIn, useDockState, type DockPanel } from "@/lib/dock";
+import { chatKey, dock, placeIn, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
 import { browserStatus, computerStatus, currentTurn, strongest, turnComputerUse } from "@/lib/dockActivity";
 import { dockChord, panelChord } from "@/lib/dockKeys";
 import { changesRound, totalsLabel } from "@/lib/laneChanges";
@@ -963,6 +964,21 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (!terminal.inDock) terminal.setLayout((l) => moveTerminal(l, "right"));
     setTerminalOpen(true);
   };
+  // What an agent's `bloks dock show` named inside a panel: a page in the
+  // browser, or one of its own terminal tabs, which brings the terminal
+  // into the dock from wherever it sat. A file and a change are their
+  // panels' to open (FilesPanel, ChangesPanel).
+  const dockFocus = useDockFocus(dockKey);
+  useEffect(() => {
+    if (!dockFocus) return;
+    const target = dockFocus.target;
+    if (target?.kind === "page") void showPage(target.url, browserState?.tabs);
+    if (target?.kind === "terminal") showTerminalTab(bot.id, target.id);
+    if (dockFocus.panel === "terminal") {
+      if (!terminal.inDock) terminal.setLayout((l) => moveTerminal(l, "right"));
+      setTerminalOpen(true);
+    }
+  }, [dockFocus?.n]); // eslint-disable-line react-hooks/exhaustive-deps
   const dockHost: DockHost = {
     openDoc: (doc) => dock.openDoc(dockKey, doc),
     // in the dock only where its browser can open the page and the person

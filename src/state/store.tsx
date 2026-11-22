@@ -62,6 +62,7 @@ import { toast } from "@/components/ui/toast";
 import { openJoinDialog, workspaceFrame } from "@/lib/members";
 import { loadPlan } from "@/lib/planClient";
 import { browserHome, noteBrowserState, revealBrowser } from "@/lib/appBrowser";
+import { dock, DOCK_PANELS, type DockAsk, type DockPanel } from "@/lib/dock";
 import { formatDate, t } from "../lib/i18n.ts";
 
 export * from "./reducer";
@@ -1134,6 +1135,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "browser.reveal":
           // an agent started browsing in the server's own browser
           revealBrowser();
+          break;
+        case "dock.show":
+          // an agent's `bloks dock show`, for the conversation it answers;
+          // the dock decides whether it shows (src/lib/dock.ts, mayShow)
+          if (typeof frame.botId === "string" && typeof frame.threadId === "string" && DOCK_PANELS.includes(frame.panel as DockPanel)) {
+            dock.ask({ botId: frame.botId, threadId: frame.threadId, panel: frame.panel as DockPanel, ...(frame.target && typeof frame.target === "object" ? { target: frame.target as DockAsk["target"] } : {}) });
+          }
           break;
         case "blok":
           rawDispatch({ type: "blokPatched", blok: frame.blok });

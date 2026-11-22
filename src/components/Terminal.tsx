@@ -23,7 +23,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, Minimize2, Plus, X } from "@/components/icons";
+import { ArrowDown, Bot, Minimize2, Plus, X } from "@/components/icons";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { HeaderButton, LayoutMenu, MoreMenu } from "@/components/terminal/TerminalMenus";
@@ -322,6 +322,16 @@ function TerminalView({
       // keeps its size and its screen, and showing it moves nothing
       className={cn("absolute inset-0 flex flex-col", !visible && "invisible")}
     >
+      {/* an agent's own tab says so above its screen, and what it runs:
+          the agent reads back what is printed here, typing included */}
+      {info?.agent && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b bg-brand-soft/60 px-3 py-1 text-caption text-muted-foreground">
+          <Bot size={12} className="shrink-0 text-brand-ink" aria-hidden />
+          <span className="min-w-0 truncate" title={info.agent.command}>
+            {t("terminal.agentTab", { name: info.agent.name, command: info.agent.command })}
+          </span>
+        </div>
+      )}
       {/* The host is what xterm measures to decide how many columns fit,
           so it carries no padding of its own: see .term-host in
           styles.css, where the room goes inside the terminal instead.
@@ -393,6 +403,16 @@ const OPEN_TAB = "*";
 
 /** The tab you had open for each agent, for as long as the app is. */
 const lastActive = new Map<string, string>();
+/** Panels to tell when a tab is asked for from outside them. */
+const tabAsks = new Set<(botId: string, id: string) => void>();
+
+/** One of an agent's tabs brought to the front, by an agent's `bloks dock
+ * show terminal <tab>`: the open panel switches to it, and a panel opened
+ * later starts on it. Never takes the keyboard. */
+export function showTerminalTab(botId: string, id: string) {
+  lastActive.set(botId, id);
+  for (const ask of tabAsks) ask(botId, id);
+}
 
 export type TerminalMode = "docked" | "fill" | "window";
 
@@ -466,6 +486,13 @@ export function TerminalPanel({
     wantsFocus.current = null;
     handle.focus();
   }, [focusTick, current?.id]);
+
+  // a tab asked for from outside (showTerminalTab)
+  useEffect(() => {
+    const ask = (forBot: string, id: string) => forBot === botId && setActiveState(id);
+    tabAsks.add(ask);
+    return () => void tabAsks.delete(ask);
+  }, [botId]);
 
   // A different agent is a different set of tabs.
   useEffect(() => {
@@ -701,7 +728,7 @@ export function TerminalPanel({
                   tabIndex={open ? 0 : -1}
                   onClick={() => select(tab.id)}
                   onDoubleClick={() => setRenaming(tab.id)}
-                  title={`${tab.title}\n${tab.cwd}\n${t("terminal.tabHint", { keys: stepKeys })}`}
+                  title={`${tab.title}\n${tab.agent ? `${t("terminal.agentTab", { name: tab.agent.name, command: tab.agent.command })}\n` : ""}${tab.cwd}\n${t("terminal.tabHint", { keys: stepKeys })}`}
                   className={cn(
                     "flex h-7 max-w-[176px] items-center gap-1.5 rounded-md pl-2.5 pr-7 text-body outline-none transition-colors duration-150",
                     open ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -709,6 +736,11 @@ export function TerminalPanel({
                 >
                   {tab.exitedAt && (
                     <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-muted-foreground/50" />
+                  )}
+                  {/* an agent's own tab wears its badge: it started it and
+                      reads it back, where the person's tabs are theirs */}
+                  {tab.agent && (
+                    <Bot size={12} className="shrink-0 text-brand-ink" aria-label={t("terminal.agentBadge", { name: tab.agent.name })} />
                   )}
                   <span className="truncate">{tab.title}</span>
                   {tab.exitedAt && <span className="sr-only">{t("terminal.exited")}</span>}

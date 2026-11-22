@@ -170,6 +170,16 @@ describe("what an agent cannot do", () => {
   test("it cannot open a shell or read another agent's terminal", () => {
     assert.equal(allows(ME, "POST", `/api/bots/${ME}/terminal`).ok, false);
     assert.equal(allows(ME, "GET", `/api/bots/${SOMEONE_ELSE}/terminal/stream`).ok, false);
+    // nor the person's tabs, its own agent's included: only its own tabs,
+    // through routes that list and reach nothing else (GitHub 522)
+    assert.equal(allows(ME, "GET", `/api/bots/${ME}/terminals`).ok, false);
+    assert.equal(allows(ME, "POST", `/api/bots/${ME}/terminals/abc/input`).ok, false);
+    assert.equal(allows(ME, "GET", "/api/agent/terminals").ok, true);
+    assert.equal(allows(ME, "POST", "/api/agent/terminals").ok, true);
+    assert.equal(allows(ME, "GET", "/api/agent/terminals/abc").ok, true);
+    assert.equal(allows(ME, "DELETE", "/api/agent/terminals/abc").ok, true);
+    assert.equal(allows(ME, "POST", "/api/agent/terminals/abc/input").ok, false, "it never types into a tab, even its own");
+    assert.equal(allows(ME, "POST", "/api/agent/dock").ok, true);
   });
 
   test("a refusal says what would have worked instead", () => {

@@ -6906,6 +6906,8 @@
   "telegramSection.voiceTranscribedByWhisper": "Los mensajes de voz los transcribe tu servidor Whisper.",
   "telegramSection.youOwn": "Eres el propietario de {handle}",
   "telegramSection.yourBot": "tu bot",
+  "terminal.agentBadge": "Abierta por {name}",
+  "terminal.agentTab": "{name} abrió esta pestaña para ejecutar {command} y puede leer lo que muestra.",
   "terminal.closeNamed": "Cerrar {title}",
   "terminal.closeQuestion": "¿Cerrar {title}?",
   "terminal.commandStillRunning": "{command} sigue ejecutándose en ella, y cerrar la pestaña la termina.",

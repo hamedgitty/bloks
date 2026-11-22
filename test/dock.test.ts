@@ -335,7 +335,7 @@ describe("shown by an agent on purpose", () => {
     dock.noteTurn(key, "turn1", ["docs", "changes", "terminal"]);
     assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "changes", target: { kind: "change", path: "a.ts", line: 3 } }, width), true);
     assert.equal(placeIn(dock.get(), key).panel, "changes");
-    assert.equal(dock.focus(key)?.target.kind, "change");
+    assert.equal(dock.focus(key)?.target?.kind, "change");
     dock.closeTab(key, "changes");
     assert.equal(dock.ask({ botId: "ask-bot", threadId: "lane", panel: "changes" }, width), false, "closed in this turn");
     dock.noteTurn(key, "turn2", ["docs", "changes", "terminal"]);

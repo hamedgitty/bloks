@@ -190,6 +190,16 @@ export const RULES: Rule[] = [
   // says yes on a card. Not counted against the turn's changes: a page
   // takes dozens of steps, and none of them changes the workspace.
   { method: "GET", path: "/api/agent/browser", why: "see the Bloks browser's tabs, who has it, its site rules and its downloads" },
+  // A panel of the side dock brought in front of the person, in the
+  // conversation this turn answers (`bloks dock show`, GitHub 522).
+  { method: "POST", path: "/api/agent/dock", why: "bring a panel of the side dock in front of the person in this conversation: a file of yours at a line, a page, one of your terminal tabs, the changes, the timeline" },
+  // The agent's own terminal tabs: a long-running command in a tab of
+  // its own beside the chat, read back and stopped. Never the person's
+  // tabs: the routes list and reach only tabs this agent started.
+  { method: "GET", path: "/api/agent/terminals", why: "list the terminal tabs you started yourself" },
+  { method: "POST", path: "/api/agent/terminals", why: "start a long-running command in a terminal tab of your own beside the chat, approved like any command you run" },
+  { method: "GET", path: "/api/agent/terminals/:id", why: "read the recent output of a terminal tab you started" },
+  { method: "DELETE", path: "/api/agent/terminals/:id", why: "stop and close a terminal tab you started" },
   { method: "POST", path: "/api/agent/browser", why: "browse in the Bloks browser while the person watches: open, read, snapshot, click, type, select, scroll, wait, screenshot, switch tabs and answer a page's dialogs" },
 
   // Who is here, so an agent can address someone by name rather than

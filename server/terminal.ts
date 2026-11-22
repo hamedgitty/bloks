@@ -19,7 +19,16 @@
 // exists rather than a spawn per open.
 //
 // An agent can have several, the way a terminal app has tabs: a dev
-// server in one, the tests in another, git in a third. Each is its own
+// server in one, the tests in another, git in a third.
+//
+// Some of them are the agent's own. An agent's ordinary commands run in
+// its turn, not here; but a command that keeps running (a dev server, a
+// watcher, tests the person wants to watch) it can start in a tab of its
+// own (`bloks terminal run`), which the app labels as the agent's and the
+// person can watch and type in. The agent reads back only its own tabs'
+// output and stops only its own tabs; the person's tabs are never its to
+// read or type in. Each is an ordinary shell with the command typed into
+// it, so when the command ends the shell stays, as it would for anyone. Each is its own
 // shell with its own id, and they are kept in the order they were opened,
 // which is the order the tabs are drawn in. The first one is also what
 // the older single-shell routes mean by "the agent's terminal", so a
@@ -48,6 +57,16 @@ export interface TerminalInfo {
   /** Set once the shell has exited; the session stays readable. */
   exitedAt?: number;
   exitCode?: number | null;
+  /** A tab an agent started: who, from which conversation, running what. */
+  agent?: AgentTab;
+}
+
+/** What makes a tab an agent's own. */
+export interface AgentTab {
+  name: string;
+  /** The conversation that started it. */
+  taskId: string;
+  command: string;
 }
 
 /** Sizes a client may ask for. A terminal narrower than this is not a
@@ -66,6 +85,17 @@ export const SCROLLBACK_BYTES = 128 * 1024;
  * and few enough that a runaway loop pressing + cannot fill the machine
  * with them. */
 export const MAX_PER_AGENT = 8;
+
+/** Of those, the most an agent may start itself, so the person always has
+ * room for their own. */
+export const MAX_AGENT_TABS = 4;
+
+/** A command an agent may type into a tab of its own: one line, as long
+ * as a person would type. */
+export const MAX_COMMAND = 2000;
+
+/** How much an agent may read back at once, in lines. */
+export const READ_LINES = { fallback: 80, max: 400 } as const;
 
 /** And a ceiling on the lot, across every agent. */
 export const MAX_SESSIONS = 32;
@@ -444,6 +474,12 @@ export interface SessionInput {
   title?: string;
   /** Told once, when the shell ends on its own or is ended. */
   onExit?: () => void;
+  /** An agent's own tab, and the command typed into it once the shell is
+   * ready. */
+  agent?: AgentTab;
+  /** False for an agent's tab restarted by the person: same label, a
+   * fresh shell, nothing typed. */
+  typeCommand?: boolean;
 }
 
 /** One live shell, and everyone watching it. */
@@ -461,6 +497,7 @@ export class TerminalSession {
   rows: number;
   exitedAt?: number;
   exitCode?: number | null;
+  readonly agent?: AgentTab;
   /** When the last client detached, or when it opened if nobody has
    * attached yet. Zero while somebody is watching. */
   idleSince: number;
@@ -475,6 +512,7 @@ export class TerminalSession {
   constructor(input: SessionInput) {
     this.id = input.id ?? sessionId();
     this.title = input.title ?? "Terminal 1";
+    if (input.agent) this.agent = input.agent;
     this.onExit = input.onExit;
     this.botId = input.botId;
     this.cwd = input.cwd;
@@ -521,6 +559,23 @@ export class TerminalSession {
       take(Buffer.from(`\r\n[the shell exited${code === null ? "" : ` with ${code}`}]\r\n`));
       this.settle(code);
     });
+    // An agent's command is typed in once the shell has said something
+    // (its prompt), or after a moment if it says nothing: typed before the
+    // shell reads its keyboard, a line can be lost to its start-up.
+    if (input.agent?.command && input.typeCommand !== false) {
+      // Return in a pty, a newline to a shell reading a pipe
+      const line = `${input.agent.command}${this.pty ? "\r" : "\n"}`;
+      let typed = false;
+      const type = () => {
+        if (typed) return;
+        typed = true;
+        clearTimeout(timer);
+        this.child?.stdout.off("data", type);
+        setTimeout(() => this.write(line), 60);
+      };
+      const timer = setTimeout(type, 1_500);
+      this.child.stdout.on("data", type);
+    }
   }
 
   private settle(code: number | null) {
@@ -555,7 +610,14 @@ export class TerminalSession {
       rows: this.rows,
       startedAt: this.startedAt,
       ...(this.exitedAt ? { exitedAt: this.exitedAt, exitCode: this.exitCode ?? null } : {}),
+      ...(this.agent ? { agent: { ...this.agent } } : {}),
     };
+  }
+
+  /** The last `lines` lines of what it printed, as plain text: what an
+   * agent reads back from a tab of its own. */
+  tail(lines: number): string {
+    return lastLines(plainText(this.scrollback.read().toString("utf8")), lines);
   }
 
   /** Watch. Returns the tail of what has already happened, plus how to stop. */
@@ -753,10 +815,13 @@ export class TerminalStore {
   }
 
   /** A new tab for this agent, named after the lowest free number. */
-  create(input: { botId: string; cwd: string; cols: number; rows: number; now: number; title?: string }): TerminalSession {
+  create(input: { botId: string; cwd: string; cols: number; rows: number; now: number; title?: string; agent?: AgentTab }): TerminalSession {
     const mine = this.agents.get(input.botId) ?? new Map<string, TerminalSession>();
     if (mine.size >= MAX_PER_AGENT) {
       throw new TerminalLimitError(`${MAX_PER_AGENT} terminals is the most one agent can have open. Close one first.`);
+    }
+    if (input.agent && [...mine.values()].filter((s) => s.agent).length >= MAX_AGENT_TABS) {
+      throw new TerminalLimitError(`${MAX_AGENT_TABS} tabs of your own is the most you can have open. Stop one first (\`bloks terminal stop <tab>\`).`);
     }
     this.makeRoom();
     const title = cleanTitle(input.title) ?? terminalTitle([...mine.values()].map((s) => s.title));
@@ -778,7 +843,9 @@ export class TerminalStore {
     const mine = this.agents.get(botId);
     const old = mine?.get(id);
     if (!mine || !old) return null;
-    const session = this.spawn({ ...input, botId, id, title: old.title });
+    // an agent's tab stays the agent's, its command not typed again: a
+    // restart is the person's, for a fresh shell
+    const session = this.spawn({ ...input, botId, id, title: old.title, ...(old.agent ? { agent: old.agent, typeCommand: false } : {}) });
     // Set on a key a Map already has keeps the key's place, so the tab
     // stays where it was. The old shell is ended after it has been
     // replaced, which is also why its ending is not reported as news.
@@ -829,4 +896,60 @@ export class TerminalStore {
   private all(): TerminalSession[] {
     return [...this.agents.values()].flatMap((m) => [...m.values()]);
   }
+}
+
+// ── what an agent reads back ───────────────────────────────────────────
+
+/**
+ * A terminal's bytes as the text a person would see: escape sequences
+ * (colours, cursor moves, titles) taken out, a carriage return starting
+ * its line again the way a progress bar redraws, and a backspace taking
+ * back the character before it.
+ */
+export function plainText(raw: string): string {
+  const stripped = raw
+    // OSC: ESC ] ... BEL or ESC \
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    // CSI: ESC [ params final
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    // the other two-character escapes
+    .replace(/\u001b[@-Z\\-_]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0007\u000b\u000c\u000e-\u001f\u007f]/g, (c) => (c === "\b" ? c : ""));
+  return stripped
+    .split("\n")
+    .map((line) => {
+      // what follows the last carriage return wrote over what came before
+      const parts = line.replace(/\r+$/, "").split("\r");
+      let out = "";
+      for (const part of parts) out = part + out.slice(part.length);
+      let kept = "";
+      for (const ch of out) kept = ch === "\b" ? kept.slice(0, -1) : kept + ch;
+      return kept.replace(/\s+$/, "");
+    })
+    .join("\n");
+}
+
+/** The last `n` lines, with trailing blank ones left out. */
+export function lastLines(text: string, n: number): string {
+  const lines = text.split("\n");
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  return lines.slice(-Math.max(1, n)).join("\n");
+}
+
+/** How many lines an agent asked for, kept within what it may read. */
+export function readLines(value: unknown): number {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(READ_LINES.max, n) : READ_LINES.fallback;
+}
+
+/** A command fit to type into a tab: one line, no control characters,
+ * not empty, not too long. Null with nothing left. */
+export function cleanCommand(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(raw)) return null;
+  const text = raw.trim();
+  if (!text || text.length > MAX_COMMAND) return null;
+  return text;
 }

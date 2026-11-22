@@ -58,7 +58,7 @@ export function FilesPanel({ placeKey, place, shown, botId }: { placeKey: string
   const treeOut = Boolean(botId) && (treeAsked ?? place.docs.length === 0);
   const focus = useDockFocus(placeKey);
   const lineFor = (doc: DockDoc) =>
-    focus?.target.kind === "doc" && focus.target.botId === doc.botId && focus.target.name === doc.name && focus.target.line
+    focus?.target?.kind === "doc" && focus.target.botId === doc.botId && focus.target.name === doc.name && focus.target.line
       ? { at: focus.target.line, n: focus.n }
       : undefined;
 

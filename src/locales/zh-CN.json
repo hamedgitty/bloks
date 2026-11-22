@@ -6657,6 +6657,8 @@
   "telegramSection.voiceTranscribedByWhisper": "语音消息由你的 Whisper 服务器进行转写。",
   "telegramSection.youOwn": "你拥有{handle}",
   "telegramSection.yourBot": "你的机器人",
+  "terminal.agentBadge": "由{name}启动",
+  "terminal.agentTab": "{name} 打开此标签页来运行 {command}，并能读取它的输出。",
   "terminal.closeNamed": "关闭{title}",
   "terminal.closeQuestion": "关闭{title}？",
   "terminal.commandStillRunning": "{command}仍在其中运行，关闭标签页会将其终止。",
