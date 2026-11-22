@@ -127,6 +127,12 @@ export function refusedNavigation(url, { ownPorts = [] } = {}) {
   return null;
 }
 
+/** Whether `url` is a browser extension's own page: never a tab's to
+ * show an agent, whatever brought the tab there. */
+export function isExtensionPage(url) {
+  return /^chrome-extension:/i.test(String(url ?? "").trim());
+}
+
 /** A host as the site lists write it: lower case, no port, no www. */
 export function hostOf(url) {
   try {
@@ -984,6 +990,7 @@ export class AppBrowser {
     const tab = this.tab(id);
     if (!tab) return { error: "closed" };
     if (tab.dialog) return { tab: tab.id, url: tab.url(), title: tab.title(), error: "dialog" };
+    if (isExtensionPage(tab.url())) return { tab: tab.id, url: tab.url(), title: tab.title(), error: "unreadable" };
     let timer;
     const late = new Promise((resolve) => {
       timer = setTimeout(() => resolve(null), waitMs);
@@ -1059,6 +1066,9 @@ export class AppBrowser {
       }
     }
     if (!tab) return { error: "no page is open. Use open with an address first." };
+    // an extension's own page is the owner's (its popup, its options), and
+    // never one an agent reads or works, should one ever show in a tab
+    if (isExtensionPage(tab.url())) return { error: "this tab shows a browser extension's own page, which agents do not read or use. Open a web page instead.", tab: tab.id };
     if (tab.dialog && command.action !== "dialog") {
       // A page waiting on its dialog does nothing else until it has an
       // answer, and every call to it would only wait: the agent hears

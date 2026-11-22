@@ -429,6 +429,8 @@ declare global {
         add(path: string): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
         setEnabled(slug: string, enabled: boolean): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
         remove(slug: string): Promise<import("../lib/browserExtensions").BrowserExtensionRow[]>;
+        /** Its popup or options page, in a window of its own; absent before 3.2.11. */
+        open?(slug: string, page: import("../lib/browserExtensions").ExtensionPage, anchor?: { x: number; y: number; width: number; height: number }): Promise<{ ok: boolean }>;
       };
       onQuickOpened(handler: () => void): () => void;
       /** Whether this Mac can prove who is at the keyboard: "biometry",

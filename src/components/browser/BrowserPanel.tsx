@@ -76,6 +76,7 @@ import { t } from "@/lib/i18n";
 import { sameAddress } from "@/lib/mentions";
 import { tabsInScope, type TabScope } from "@/lib/dockActivity";
 import { screenInput, type InputSender } from "./screenInput";
+import { appExtensions, ExtensionsMenu } from "./ExtensionsMenu";
 
 /** The server's word on the browser, for a page that does not have the
  * app's own; its "browser.app" frames keep it fresh after this. */
@@ -239,6 +240,8 @@ function BrowserPanel({
   const active = state?.tabs.find((t) => t.id === state.activeTabId) ?? null;
   const line = controlLine(state?.control);
   const absent = onServer && missing !== null;
+  // the extensions' own pages, the person's to open (ExtensionsMenu)
+  const [extensions] = useState(() => (onServer ? null : appExtensions()));
 
   // Where the page goes, said to the app whenever it moves, and "nowhere"
   // while something is drawn over it, while the edge is dragged (the view
@@ -344,6 +347,7 @@ function BrowserPanel({
             <span aria-hidden className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-brand" />
           )}
         </HeaderButton>
+        {extensions && <ExtensionsMenu source={extensions} />}
       </div>
 
       {line && (

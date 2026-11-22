@@ -1,7 +1,7 @@
 // Chrome extensions in the Bloks browser (GitHub 510), as the settings
-// page sees them: the shapes electron/browser-extensions.mjs answers
-// with, through the desktop app's bridge. There is no server half: they
-// live in the app's browser session, which only the app has.
+// page and the browser's extensions button see them: the shapes
+// electron/browser-extensions.mjs answers with, through the desktop
+// app's bridge.
 export interface BrowserExtensionInfo {
   name: string;
   version: string;
@@ -29,7 +29,21 @@ export interface BrowserExtensionRow {
   addedAt: number;
   info?: BrowserExtensionInfo;
   compatibility?: Compatibility;
+  /** Which of its own pages it has to open; absent from an app before 3.2.11. */
+  pages?: { popup: boolean; options: boolean };
   problem?: string;
+}
+
+/** An extension's own pages the owner opens from the browser's
+ * extensions button: its toolbar popup and its options page. */
+export type ExtensionPage = "popup" | "options";
+
+/** What the extensions button lists: each one switched on, working, with
+ * a popup or an options page to open, in the order they were added. */
+export function openableExtensions(rows: readonly BrowserExtensionRow[]): Array<{ slug: string; name: string; popup: boolean; options: boolean }> {
+  return rows
+    .filter((row) => row.enabled && !row.problem && (row.pages?.popup || row.pages?.options))
+    .map((row) => ({ slug: row.slug, name: row.name, popup: Boolean(row.pages?.popup), options: Boolean(row.pages?.options) }));
 }
 
 export interface BrowserExtensionLook {

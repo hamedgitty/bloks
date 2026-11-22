@@ -3918,18 +3918,57 @@ copies folder.
 What works, as Electron supports it: content scripts, a background page
 or service worker, `chrome.storage`, `runtime` messaging, `scripting`,
 `tabs` in part, `webRequest`, `management` and `i18n`. What does not, and
-is said before adding: toolbar buttons and popups (the browser has no
-toolbar for extensions), options pages, devtools panels, keyboard
-shortcuts, side panels, `activeTab`, native messaging (a password
-manager's link to its desktop app), context menus, notifications,
-identity, cookies, alarms, declarativeNetRequest, downloads, history and
-bookmarks, and anything Electron does not list. So most password
-managers load but cannot be unlocked here yet. Agents never install,
-open or switch one; `chrome-extension:` addresses are refused in every
-tab (`refusedNavigation`); an agent's commands are the fixed CDP list and
-never run in an extension's isolated world; and a password or payment
-field is still an approval card. A server's own headless browser takes
-no extensions yet.
+is said before adding: devtools panels, keyboard shortcuts, side panels,
+`activeTab`, native messaging (a password manager's link to its desktop
+app; Electron has no `connectNative` or `sendNativeMessage` at all),
+context menus, notifications, identity, cookies, alarms,
+declarativeNetRequest, downloads, history and bookmarks, and anything
+Electron does not list.
+
+An extension's toolbar popup and options page are the owner's to open,
+from the extensions button in the Bloks browser's toolbar
+(`src/components/browser/ExtensionsMenu.tsx`), so a password manager can
+be unlocked and set up. `pagesOf` reads `action.default_popup` (or
+version 2's `browser_action`/`page_action`) and `options_ui.page` (or
+`options_page`) from the copy, as paths inside it that are there, never a
+link, another scheme or a path that climbs out; `pageUrl` makes the
+`chrome-extension://<id>/` address only for an id Chrome gave. The bridge
+call `browser-extensions:open` (the app's page only, a workspace this app
+runs, an extension the owner switched on and Electron has loaded) opens
+the page with `electron/extension-windows.mjs`: a window of its own in
+the workspace's browser session, sandboxed, with no preload of ours, no
+debugger, and no place among the tabs, so no agent's tab list, tab
+picture or command reaches it. Its picture is kept from the screen's own
+capture (`setContentProtection`), so an agent working the computer
+cannot read a vault off the screen either. A popup is frameless, sits
+under the button, sizes itself to its page within Chrome's 25 to 800 by
+600 pixels (`enablePreferredSizeMode`), and closes when the focus goes
+elsewhere; an options page is an ordinary window. Either goes only to
+its own extension's pages (`isPageOf`): a link out of them is opened as
+the person's tab in the Bloks browser under `refusedNavigation`, and a
+window it tries to open is refused. Switching the extension off,
+removing it or forgetting the workspace closes its windows, and the app
+never takes one for a window of its own (`isWorkspaceWindow`,
+`pointWindows`).
+
+Being a page of its own rather than a bubble over a tab, a popup cannot
+tell which tab is the person's (`chrome.tabs.query({ active: true })`
+answers the popup itself, since it has the focus), so a password
+manager's "fill" button in its popup does not reach the page; its fill
+on the page itself does, and the compatibility list says so.
+
+Agents never install, open or switch one. `chrome-extension:` addresses
+are refused in every tab (`refusedNavigation`). An extension moving a tab
+to its own page itself (`chrome.tabs.update`) starts no `will-navigate`,
+so a tab also stops such a navigation a tick after `did-start-navigation`
+(stopping inside that event crashes Electron) and blanks one that commits
+all the same; while one is shown, every agent command on that tab is
+refused and a mention does not read it (`isExtensionPage` in
+`server/browser-core.mjs`). An agent's commands are the fixed CDP list and
+never run in an extension's isolated world, and a password or payment
+field is still an approval card; after a fill, a password reads as dots
+in a snapshot and is absent from `read`. A server's own headless browser
+takes no extensions yet.
 
 ## Terminals
 

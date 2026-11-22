@@ -158,6 +158,9 @@ contextBridge.exposeInMainWorld("bloks", {
     add: (path) => ipcRenderer.invoke("browser-extensions:add", path),
     setEnabled: (slug, enabled) => ipcRenderer.invoke("browser-extensions:set-enabled", slug, enabled),
     remove: (slug) => ipcRenderer.invoke("browser-extensions:remove", slug),
+    // its popup or options page, in a window of its own: `anchor` is the
+    // button it was opened from, for the popup to sit under
+    open: (slug, page, anchor) => ipcRenderer.invoke("browser-extensions:open", slug, page, anchor),
   },
   onQuickOpened: subscription("quick:opened"),
   onNotifyActivate: subscription("notify:activate"),

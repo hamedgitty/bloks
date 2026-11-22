@@ -18,9 +18,13 @@
 // The owner is shown what an extension is and asks for before it is
 // added, and what of it will and will not work here, read from its
 // manifest against what Electron supports. That list is honest rather
-// than hopeful: a password manager's popup, its link to its desktop app
-// (native messaging) and its toolbar button are not things this browser
-// has.
+// than hopeful: a password manager's link to its desktop app (native
+// messaging) is not a thing this browser has.
+//
+// Its toolbar popup and its options page are the owner's to open, from
+// the extensions button in the Bloks browser (pagesOf, pageUrl): main.mjs
+// shows each in a small window of its own in the workspace's session,
+// never as a tab, so no agent's tab list, picture or command reaches one.
 //
 // Plain Node and an injected session, so it can be tested outside
 // Electron (test/browser-extensions.test.ts); main.mjs does the wiring.
@@ -42,7 +46,7 @@ const SUPPORTED = new Set(["storage", "unlimitedStorage", "scripting", "tabs", "
 /** Permissions it does not, said the way the owner would miss them. */
 const UNSUPPORTED = {
   nativeMessaging: "Talking to an app on this computer (native messaging), which password managers use to unlock with their desktop app",
-  activeTab: "Access granted by clicking its toolbar button, which the Bloks browser does not have",
+  activeTab: "Access granted by clicking its toolbar button, which Electron does not give",
   contextMenus: "Items in the right-click menu",
   notifications: "System notifications",
   identity: "Signing in with chrome.identity",
@@ -70,6 +74,9 @@ const UNSUPPORTED = {
 const HIDDEN = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g;
 const words = (value, max) => (typeof value === "string" ? value.replace(HIDDEN, "").trim().slice(0, max) : "");
 
+/** The ids Chrome gives extensions: 32 letters from a to p. */
+const EXTENSION_ID = /^[a-p]{32}$/;
+
 /** A __MSG_name__ in a manifest, read from its default locale. */
 function localized(dir, manifest, value) {
   const m = typeof value === "string" ? /^__MSG_(\w+)__$/.exec(value) : null;
@@ -89,7 +96,7 @@ function localized(dir, manifest, value) {
  * cut to what the owner is shown. Throws with words for a folder that is
  * not one.
  */
-export function readBrowserExtension(dir) {
+function readManifest(dir) {
   let raw;
   try {
     const text = fs.readFileSync(path.join(dir, "manifest.json"), "utf8");
@@ -99,6 +106,11 @@ export function readBrowserExtension(dir) {
     throw new Error("That folder has no manifest.json Bloks can read. Pick the folder of an unpacked Chrome extension.");
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Its manifest.json is not an object.");
+  return raw;
+}
+
+export function readBrowserExtension(dir) {
+  const raw = readManifest(dir);
   const list = (value) => (Array.isArray(value) ? value.filter((x) => typeof x === "string").map((x) => x.slice(0, 200)).slice(0, 200) : []);
   const permissions = list(raw.permissions);
   // in version 2 hosts are listed among the permissions
@@ -125,40 +137,117 @@ export function readBrowserExtension(dir) {
   };
 }
 
+/** What a server's own Chrome lacks, where the desktop app's Electron
+ * would have it all: what needs a screen, a desktop app beside it, or a
+ * click on a real toolbar. */
+const SERVER_UNSUPPORTED = {
+  nativeMessaging: "Talking to an app on the server (native messaging): there is no password manager's desktop app there to talk to",
+  activeTab: "Access granted by clicking its toolbar button: opening its popup from Bloks does not grant it",
+  contextMenus: "Items in the right-click menu, which the pictures of the page do not show",
+  notifications: "System notifications: the server has no screen to show them on",
+  sidePanel: "A side panel",
+};
+
 /**
  * What of it will work in the Bloks browser, and what will not, each as
- * a line the owner reads before adding it. The verdict is "works" when
- * nothing it relies on is missing, "partly" when some of it is, and
- * "unlikely" when what is missing is how it is used at all.
+ * a line the owner reads before adding it. `host` is which browser: the
+ * desktop app's ("app", Electron's part of Chrome's extension support)
+ * or a server's own headless Chrome ("server", nearly all of it). The
+ * verdict is "works" when nothing it relies on is missing, "partly" when
+ * some of it is, and "unlikely" when nothing of it would run at all.
  */
-export function compatibility(info) {
+export function compatibility(info, { host = "app" } = {}) {
+  const server = host === "server";
   const works = [];
   const missing = [];
   if (info.manifestVersion === null) missing.push("A manifest_version Bloks knows (2 or 3)");
   if (info.contentScripts) works.push("Its scripts on the pages it lists");
   if (info.background) works.push(info.background === "service worker" ? "Its background service worker" : "Its background page");
   for (const p of info.permissions) {
-    if (SUPPORTED.has(p)) works.push(`chrome.${p === "unlimitedStorage" ? "storage" : p === "webRequestBlocking" ? "webRequest" : p}`);
+    const named = `chrome.${p === "unlimitedStorage" ? "storage" : p === "webRequestBlocking" ? "webRequest" : p}`;
+    if (server) {
+      if (SERVER_UNSUPPORTED[p]) missing.push(SERVER_UNSUPPORTED[p]);
+      else works.push(named);
+    } else if (SUPPORTED.has(p)) works.push(named);
     else missing.push(UNSUPPORTED[p] ?? `The ${p} permission, which Electron does not list as supported`);
   }
-  if (info.popup) missing.push("Its toolbar button and popup: the Bloks browser has no toolbar for extensions");
-  if (info.options) missing.push("Its options page");
+  // its popup and options page open from the extensions button, each a
+  // page of its own rather than a bubble over a tab, so the popup cannot
+  // tell which tab is yours: filling from it does not reach the page
+  if (info.popup) {
+    works.push("Its toolbar popup, opened from the extensions button in the Bloks browser");
+    missing.push("Filling a page from its popup, which cannot tell which tab you mean; filling on the page itself works");
+  }
+  if (info.options) works.push("Its options page, opened from the same button");
   if (info.devtools) missing.push("Its developer tools panel");
   if (info.commands) missing.push("Its keyboard shortcuts");
   if (info.overrides) missing.push("Replacing the new tab or other browser pages");
-  if (info.sidePanel) missing.push("Its side panel");
-  if (info.externallyConnectable) missing.push("Websites talking to it directly (externally_connectable)");
+  if (info.sidePanel) missing.push(server ? SERVER_UNSUPPORTED.sidePanel : "Its side panel");
+  if (info.externallyConnectable) {
+    if (server) works.push("Websites talking to it directly");
+    else missing.push("Websites talking to it directly (externally_connectable)");
+  }
   const unique = (xs) => [...new Set(xs)];
   const lost = unique(missing);
-  // a popup or native messaging is how a password manager is unlocked:
-  // without them it is unlikely to be of use, whatever else loads
-  const popupOnly = info.popup && !info.contentScripts;
-  const vital = popupOnly || (info.popup && info.permissions.includes("nativeMessaging"));
+  const runs = info.contentScripts || info.background || info.popup || info.options;
   return {
-    verdict: lost.length === 0 ? "works" : vital ? "unlikely" : "partly",
+    verdict: lost.length === 0 ? "works" : info.manifestVersion === null || !runs ? "unlikely" : "partly",
     works: unique(works),
     missing: lost,
   };
+}
+
+/** A page of the extension's own, as its manifest names it: a path in
+ * its folder that is there, with nothing that climbs out, and the query
+ * it carries when that is plain. Null for anything else. */
+function pagePath(dir, value) {
+  if (typeof value !== "string" || value.length > 300) return null;
+  const [file, ...rest] = value.split("#")[0].replace(/^\/+/, "").split("?");
+  const query = rest.join("?");
+  if (!file || /^[a-z][a-z0-9+.-]*:/i.test(file) || file.includes("\\") || file.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  const root = path.resolve(dir);
+  const full = path.resolve(root, file);
+  if (!full.startsWith(`${root}${path.sep}`)) return null;
+  try {
+    if (!fs.lstatSync(full).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return query && /^[\w.=&%+-]{1,200}$/.test(query) ? `${file}?${query}` : file;
+}
+
+/** Its toolbar popup and options page, as paths in its folder, or null
+ * for one it does not have. */
+export function pagesOf(dir) {
+  let raw;
+  try {
+    raw = readManifest(dir);
+  } catch {
+    return { popup: null, options: null };
+  }
+  const popup = raw.action?.default_popup ?? raw.browser_action?.default_popup ?? raw.page_action?.default_popup;
+  const options = raw.options_ui?.page ?? raw.options_page;
+  return { popup: pagePath(dir, popup), options: pagePath(dir, options) };
+}
+
+/** The address of one of a loaded extension's pages, or null when the id
+ * is not one Chrome gives or the path is not one of its own. */
+export function pageUrl(extensionId, page) {
+  if (typeof extensionId !== "string" || !EXTENSION_ID.test(extensionId) || typeof page !== "string" || !page) return null;
+  const [file, query] = page.split("?");
+  if (file.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  return `chrome-extension://${extensionId}/${file.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`;
+}
+
+/** Whether `url` is a page of the extension `extensionId`: where its own
+ * window may go, and nowhere else. */
+export function isPageOf(url, extensionId) {
+  try {
+    const parsed = new URL(String(url));
+    return parsed.protocol === "chrome-extension:" && parsed.hostname === extensionId && EXTENSION_ID.test(extensionId);
+  } catch {
+    return false;
+  }
 }
 
 /** The workspace's list, as saved. */
@@ -203,10 +292,10 @@ function walk(root) {
 }
 
 /** A folder's look, for the owner, before anything is added. */
-export function inspectFolder(dir) {
+export function inspectFolder(dir, { host = "app" } = {}) {
   const size = walk(dir);
   const info = readBrowserExtension(dir);
-  return { path: dir, ...size, info, compatibility: compatibility(info) };
+  return { path: dir, ...size, info, compatibility: compatibility(info, { host }) };
 }
 
 /**
@@ -315,9 +404,11 @@ export function removeExtension(ses, dataDir, slug) {
   if (dir.startsWith(`${copies}${path.sep}`)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
-/** The list as the settings page shows it: each one's look again, from
- * its copy, so what it asks for is always what is installed. */
-export function listView(dataDir) {
+/** The list as the settings page and the extensions button show it:
+ * each one's look again, from its copy, so what it asks for is always
+ * what is installed, and which of its popup and options page there are
+ * to open. */
+export function listView(dataDir, { host = "app" } = {}) {
   return readList(dataDir).map((entry) => {
     let info = null;
     try {
@@ -325,6 +416,7 @@ export function listView(dataDir) {
     } catch {
       /* its copy is gone; said as a problem */
     }
+    const pages = info ? pagesOf(entry.dir) : { popup: null, options: null };
     return {
       slug: entry.slug,
       name: info?.name ?? entry.name,
@@ -332,7 +424,8 @@ export function listView(dataDir) {
       enabled: Boolean(entry.enabled),
       from: entry.from,
       addedAt: entry.addedAt,
-      ...(info ? { info, compatibility: compatibility(info) } : {}),
+      ...(info ? { info, compatibility: compatibility(info, { host }) } : {}),
+      pages: { popup: Boolean(pages.popup), options: Boolean(pages.options) },
       ...(entry.problem ? { problem: entry.problem } : !info ? { problem: "Its copy in this workspace is missing." } : {}),
     };
   });

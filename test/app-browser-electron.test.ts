@@ -14,6 +14,7 @@ import {
   fieldKind,
   formatAxSnapshot,
   hostMatches,
+  isExtensionPage,
   partitionFor,
   refusedNavigation,
   runOnTab,
@@ -264,6 +265,24 @@ test("an agent's open makes a tab of its own, and the browser says it is browsin
   assert.ok(!JSON.stringify(state).includes("Two items"), "the state never carries what is on a page");
   assert.match((await browser.command({ action: "open", url: "http://127.0.0.1:8799/" }, IVY)).error ?? "", /Bloks itself/);
   assert.match((await new AppBrowser({ makeTab: () => fakeTab() }).command({ action: "read" }, IVY)).error ?? "", /no page is open/);
+});
+
+test("a tab showing an extension's own page is never read or worked by an agent, nor read for a mention", async () => {
+  const { browser, tabs } = browserWith(SHOP);
+  const popup = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html";
+  assert.equal(isExtensionPage(popup), true);
+  assert.equal(isExtensionPage("https://example.com/"), false);
+  assert.match(refusedNavigation(popup) ?? "", /chrome-extension: addresses are not opened/);
+  // however it came to be there (an extension moving a tab itself), the
+  // agent's every command on it is refused, and nothing of it is read
+  browser.newTab({ kind: "person" });
+  tabs[0].load(popup);
+  for (const command of [{ action: "snapshot" }, { action: "read" }, { action: "screenshot" }, { action: "click", ref: "e1" }] as const) {
+    const answer = await browser.command(command, IVY);
+    assert.match(answer.error ?? "", /extension's own page, which agents do not read or use/, command.action);
+  }
+  assert.ok(!tabs[0].calls.some((c) => c.method === "Accessibility.getFullAXTree" || c.method === "Page.captureScreenshot" || c.method === "Runtime.evaluate"), "not one protocol call reached it");
+  assert.equal((await browser.peek("t1")).error, "unreadable");
 });
 
 test("the person takes over: the agent's next action is held and says who waits, until it is given back", async () => {

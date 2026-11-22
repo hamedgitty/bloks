@@ -74,6 +74,7 @@ import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
 import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, holdDialogs, partitionFor, refusedNavigation } from "./app-browser.mjs";
 import * as browserExtensions from "./browser-extensions.mjs";
+import * as extensionWindowsKit from "./extension-windows.mjs";
 import os from "node:os";
 
 // vendored by scripts/bundle-updater.mjs: the packaged app has no
@@ -2325,7 +2326,7 @@ function showIn(win, id, query = "") {
  * nothing a reload would keep. */
 function pointWindows(id) {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win === hintWindow() || (windowWorkspace.get(win) ?? shownId) !== id) continue;
+    if (win.isDestroyed() || win === hintWindow() || isExtensionWindow(win) || (windowWorkspace.get(win) ?? shownId) !== id) continue;
     // a server that died again at once fails the load, and the next try
     // or the failure page points the window again
     if (win === notch.window()) {
@@ -2388,8 +2389,13 @@ const terminalWins = new Map();
 /** The ⌘Q hint's window, once it is made (electron/quit-guard.mjs): a
  * panel over the others, never a window a workspace is shown in. */
 let hintWindow = () => null;
+/** The owner's windows on Chrome extensions' own pages, each a popup or
+ * an options page in a workspace's browser session (openExtensionPage),
+ * by workspace, extension and page. Never a window the app is shown in. */
+const extensionWindows = new Map();
+const isExtensionWindow = (win) => [...extensionWindows.values()].includes(win);
 function isWorkspaceWindow(win) {
-  return Boolean(win) && !win.isDestroyed() && win !== quickWin && win !== notch.window() && win !== hintWindow() && !terminalWins.has(win);
+  return Boolean(win) && !win.isDestroyed() && win !== quickWin && win !== notch.window() && win !== hintWindow() && !terminalWins.has(win) && !isExtensionWindow(win);
 }
 
 // ── the notch ─────────────────────────────────────────────────────────
@@ -2846,7 +2852,20 @@ function makeBrowserTab(held, tabId) {
   };
   const changed = () => held.browser.changed();
   for (const name of ["did-start-loading", "did-stop-loading", "page-title-updated", "did-navigate-in-page"]) wc.on(name, changed);
-  wc.on("did-navigate", () => {
+  // An extension's own page never shows in a tab, however it came to be
+  // asked for: the extension itself moving a tab (chrome.tabs.update)
+  // starts no will-navigate. Its popup and options page are the owner's,
+  // in windows of their own (openExtensionPage). The stop waits a tick:
+  // stopping inside the event that announces the navigation takes the
+  // whole app down. One that commits all the same is sent to the blank
+  // page, and an agent's command is refused on it meanwhile
+  // (browser-core.mjs isExtensionPage).
+  const extensionPage = (url) => /^chrome-extension:/i.test(String(url ?? ""));
+  wc.on("did-start-navigation", (event) => {
+    if (event.isMainFrame && !event.isSameDocument && extensionPage(event.url)) setImmediate(() => !wc.isDestroyed() && wc.stop());
+  });
+  wc.on("did-navigate", (_event, url) => {
+    if (extensionPage(url)) void wc.loadURL("about:blank").catch(() => {});
     // a new document: the last snapshot's refs name nothing on it, and
     // no dialog of the last one is still a question
     tab.refs = new Map();
@@ -3060,14 +3079,82 @@ handle("browser-extensions:add", async (event, dir) => {
 });
 handle("browser-extensions:set-enabled", async (event, slug, enabled) => {
   const { id, ws } = extensionWorkspace(event);
+  if (!enabled) closeExtensionWindows(id, String(slug));
   await browserExtensions.setEnabled(browsers.get(id)?.ses ?? null, ws.dataDir, String(slug), Boolean(enabled));
   return browserExtensions.listView(ws.dataDir);
 });
 handle("browser-extensions:remove", (event, slug) => {
   const { id, ws } = extensionWorkspace(event);
+  closeExtensionWindows(id, String(slug));
   browserExtensions.removeExtension(browsers.get(id)?.ses ?? null, ws.dataDir, String(slug));
   return browserExtensions.listView(ws.dataDir);
 });
+handle("browser-extensions:open", (event, slug, page, anchor) => openExtensionPage(event, String(slug ?? ""), String(page ?? ""), anchor));
+
+// ── an extension's own pages, the owner's alone ──
+// Its toolbar popup and its options page, opened from the extensions
+// button in the Bloks browser, each in a window of its own in the
+// workspace's browser session and never a tab
+// (electron/extension-windows.mjs says why, and how).
+
+function closeExtensionWindows(workspaceId, slug) {
+  for (const [key, win] of [...extensionWindows]) {
+    const [id, of] = key.split("|");
+    if (id !== workspaceId || (slug && of !== slug)) continue;
+    extensionWindows.delete(key);
+    if (!win.isDestroyed()) win.close();
+  }
+}
+
+async function openExtensionPage(event, slug, page, anchor) {
+  const { id, ws } = extensionWorkspace(event);
+  if (page !== "popup" && page !== "options") throw new Error("An extension has a popup and an options page to open, and nothing else.");
+  const held = browserFor(id);
+  if (!held) throw new Error("This workspace has no browser here.");
+  await held.extensionsReady;
+  const entry = browserExtensions.readList(ws.dataDir).find((e) => e.slug === slug);
+  if (!entry?.enabled) throw new Error("That extension is not on in this browser.");
+  const api = held.ses.extensions ?? held.ses;
+  if (!entry.extensionId || !api.getExtension?.(entry.extensionId)) throw new Error(`${entry.name} is not loaded in this browser${entry.problem ? `: ${entry.problem}` : "."}`);
+  const url = browserExtensions.pageUrl(entry.extensionId, browserExtensions.pagesOf(entry.dir)[page] ?? "");
+  if (!url) throw new Error(page === "popup" ? `${entry.name} has no popup.` : `${entry.name} has no options page.`);
+  const key = `${id}|${slug}|${page}`;
+  const had = extensionWindows.get(key);
+  if (had && !had.isDestroyed()) {
+    had.show();
+    had.focus();
+    return { ok: true };
+  }
+  await extensionWindowsKit.openExtensionWindow({
+    BrowserWindow,
+    screen,
+    parent: BrowserWindow.fromWebContents(event.sender),
+    page,
+    partition: partitionFor(id),
+    title: entry.name,
+    url,
+    extensionId: entry.extensionId,
+    anchor,
+    made: (win) => {
+      extensionWindows.set(key, win);
+      win.once("closed", () => {
+        if (extensionWindows.get(key) === win) extensionWindows.delete(key);
+      });
+    },
+    // a link out of its pages is the person's to follow, in a tab of the
+    // Bloks browser held to that browser's rules, with the panel shown
+    out: (to) => {
+      if (!/^https?:/i.test(to) || refusedNavigation(to, { ownPorts: ownPorts() })) return;
+      try {
+        held.browser.newTab({ kind: "person" }).load(to);
+        for (const shown of windowsShowing(held.id)) shown.webContents.send("browser:reveal", {});
+      } catch {
+        /* the most tabs there may be are open */
+      }
+    },
+  });
+  return { ok: true };
+}
 
 handle("browser:bounds", (event, rect) => {
   const id = senderWorkspace(event);
@@ -3222,6 +3309,7 @@ async function browserThumbnail(id) {
 
 /** A deleted workspace's browser: its tabs closed, its session emptied. */
 async function forgetBrowser(id) {
+  closeExtensionWindows(id);
   const held = browsers.get(id);
   const ses = held?.ses ?? session.fromPartition(partitionFor(id));
   if (held) {

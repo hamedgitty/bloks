@@ -178,6 +178,7 @@ export interface BrowserState {
 }
 
 export function refusedNavigation(url: string, options?: { ownPorts?: Array<number | string> }): string | null;
+export function isExtensionPage(url: string): boolean;
 export function hostOf(url: string): string;
 export function hostMatches(host: string, pattern: string): boolean;
 export function allowedForAgent(url: string, policy: NavigationPolicy | null | undefined): boolean;
