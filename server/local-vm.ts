@@ -37,6 +37,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "./config.ts";
+import { DESKTOP_DRIVER, DESKTOP_LABEL, DESKTOP_SOCKET } from "./desktop-image.ts";
 
 export const DRIVER_VERSION = "0.20.0";
 // the official multi-arch Cua XFCE manifest, addressed by digest so a
@@ -46,14 +47,14 @@ export const BASE_IMAGE = `docker.io/trycua/xfce-cua@${BASE_IMAGE_DIGEST}`;
 const IMAGE_LAYER = "1";
 export const IMAGE = `bloks/cua-vm:driver-${DRIVER_VERSION}-v${IMAGE_LAYER}`;
 export const CONTAINER = "bloks-vm";
-const LABEL_MANAGED = "dev.bloks.vm";
+const LABEL_MANAGED = DESKTOP_LABEL;
 const LABEL_DRIVER = "dev.bloks.vm-driver";
 const LABEL_BASE = "dev.bloks.vm-base";
 const LABEL_LAYER = "dev.bloks.vm-layer";
 export const VM_HOME = join(DATA_DIR, "vm-home");
 const GUEST_HOME = "/home/cua/workspace";
-const SOCKET = "/run/user/1000/bloks-cua.sock";
-const DRIVER_BIN = "/usr/local/libexec/bloks/cua-driver";
+const SOCKET = DESKTOP_SOCKET;
+const DRIVER_BIN = DESKTOP_DRIVER;
 const VIEWER_HOST_PORT = 6080;
 /** Where the desktop viewer is served, for the app to allow framing it. */
 export const VIEWER_ORIGIN = `http://127.0.0.1:${VIEWER_HOST_PORT}`;
@@ -778,30 +779,25 @@ export async function vmRemove(): Promise<void> {
 /** The MCP spawn contract that puts an agent inside the VM: a stdio
  * bridge child that execs `cua-driver mcp` in the container. The same
  * shape the host-Mac cua connection uses, so drivers need nothing new. */
+/** The MCP command for the computer-use driver in a desktop container:
+ * the Local VM, or one of Bloks' desktop image the person runs and an
+ * agent works in (GitHub 541). The bridge execs into it as cua. */
+export function desktopBridge(runtime: string, container: string): { command: string; args: string[]; env: Record<string, string> } {
+  // dev runs TypeScript straight; the packaged app ships compiled .js
+  const asTs = join(dirname(fileURLToPath(import.meta.url)), "local-vm-mcp.ts");
+  const bridge = existsSync(asTs) ? asTs : asTs.replace(/\.ts$/, ".js");
+  return { command: process.execPath, args: [bridge, runtime, container, SOCKET], env: { ELECTRON_RUN_AS_NODE: "1" } };
+}
+
 export async function vmMcpContract(): Promise<{
   command: string;
   args: string[];
   env: Record<string, string>;
 } | null> {
-  // dev runs TypeScript straight; the packaged app ships compiled .js
-  const asTs = join(dirname(fileURLToPath(import.meta.url)), "local-vm-mcp.ts");
-  const bridge = existsSync(asTs) ? asTs : asTs.replace(/\.ts$/, ".js");
-  if (SERVICE) {
-    return {
-      command: process.execPath,
-      args: [bridge, "service", `${SERVICE.host}:${SERVICE.port}`, SOCKET],
-      env: { ELECTRON_RUN_AS_NODE: "1" },
-    };
-  }
+  if (SERVICE) return desktopBridge("service", `${SERVICE.host}:${SERVICE.port}`);
   const runtimes = await availableRuntimes();
   for (const candidate of runtimes) {
-    if (await daemonUp(candidate)) {
-      return {
-        command: process.execPath,
-        args: [bridge, candidate, CONTAINER, SOCKET],
-        env: { ELECTRON_RUN_AS_NODE: "1" },
-      };
-    }
+    if (await daemonUp(candidate)) return desktopBridge(candidate, CONTAINER);
   }
   return null;
 }

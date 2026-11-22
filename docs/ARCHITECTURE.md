@@ -5267,6 +5267,17 @@ fails the turn with a notice and the place is looked at again until it
 answers, which the header shows (`workplaceStatus`). A container Bloks
 made is stopped, or removed, after its idle minutes.
 
+A container of Bloks' own desktop image (it carries the image's
+`dev.bloks.vm` label, `server/desktop-image.ts`), which a person can run
+by hand and point an agent at, starts as root while its desktop, its home
+and its computer-use driver are `cua`'s, and the driver refuses root. So
+everything Bloks runs in one runs as `cua` (`docker exec -u cua -e
+HOME=/home/cua`, also in the commands the person is shown), the Test runs
+the driver's `health_report` that way and is not Ready if it does not
+answer, and an agent there whose Computer is the Local VM gets that
+container's desktop as it, through the same bridge as the Local VM,
+instead of Bloks' own Local VM (GitHub 541).
+
 ## Usage and spending limits
 
 Usage is counted from events the drivers already emit

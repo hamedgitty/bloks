@@ -340,3 +340,64 @@ test("Docker that is not installed is said so, plainly", async (t) => {
   assert.equal(tested.report.ok, false);
   assert.match(tested.report.problems[0], /Docker is not installed on this computer/);
 });
+
+// A container of Bloks' own desktop image, run by the person. It starts
+// as root, its desktop and computer-use driver are cua's, and the driver
+// refuses root. Bloks exec'd in as root, so the agent never had a
+// screen there while the Test said Ready, and a turn said both that the
+// Local VM was missing and that its commands ran on this computer
+// (GitHub 541).
+test("an agent in a container of Bloks' desktop image runs there as cua, the Test checks its screen, and the desktop is its Local VM", async (t) => {
+  const { h, fake, seen, bot, project } = await setup(t);
+  fake.setDocker({ containers: { "bloks-vm-manual": { running: true, labels: { "dev.bloks.vm": "1" } } } });
+  const place = { kind: "docker", source: "container", name: "bloks-vm-manual", path: project };
+
+  let tested = await h.json(`/api/bots/${bot.id}/workplace/test`, { method: "POST", body: JSON.stringify({ workplace: place }) });
+  const screen = tested.report.checks.find((c: any) => c.id === "screen");
+  assert.equal(screen?.ok, true, JSON.stringify(tested.report));
+  // (the stand-in has no host.docker.internal, so only the screen is read)
+  assert.ok(!tested.report.problems.some((p: string) => /desktop|driver/.test(p)), tested.report.problems.join(" | "));
+  const execs = fake.dockerCalls().filter((args) => args[0] === "exec");
+  assert.ok(execs.length >= 2);
+  for (const args of execs) assert.deepEqual(args.slice(0, 6), ["exec", "-i", "-u", "cua", "-e", "HOME=/home/cua"], args.join(" "));
+
+  // a desktop whose driver does not answer is not Ready
+  fake.setDocker({ containers: { "bloks-vm-manual": { running: true, labels: { "dev.bloks.vm": "1" }, screen: false } } });
+  tested = await h.json(`/api/bots/${bot.id}/workplace/test`, { method: "POST", body: JSON.stringify({ workplace: place }) });
+  assert.equal(tested.report.ok, false);
+  assert.equal(tested.report.checks.find((c: any) => c.id === "screen")?.ok, false);
+  assert.match(tested.report.problems.join(" "), /computer-use driver did not answer/);
+
+  // a turn: the container's desktop is the screen, and nothing says the
+  // Local VM is missing or that its commands run on this computer
+  fake.setDocker({ containers: { "bloks-vm-manual": { running: true, labels: { "dev.bloks.vm": "1" } } } });
+  assert.equal((await putPlace(h, bot.id, place)).status, 200);
+  assert.equal((await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ computer: "sandbox" }) })).status, 200);
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Look at the screen." }) });
+  const out = await seenOf(seen);
+  // the computer runs here and is reached through the gate, like any
+  // server of the agent's; with the Local VM missing it would be absent
+  assert.ok(out.mcp?.mcpServers?.computer, `no computer for the container's desktop: ${JSON.stringify(out.mcp)}`);
+  assert.match(out.persona ?? "", /Linux desktop of the container you work in, bloks-vm-manual/);
+  const engine = fake.dockerCalls().find((args) => args[0] === "exec" && args.includes("claude"));
+  assert.deepEqual(engine!.slice(0, 5), ["exec", "-i", "-u", "cua", "-e"]);
+  await idle(h, bot);
+  const notices = (await messagesOf(h, bot)).filter((m: any) => m.kind === "notice").map((m: any) => m.text).join("\n");
+  assert.doesNotMatch(notices, /Local VM is not there|on this computer as usual/);
+});
+
+test("an ordinary container runs as its own user, and a missing Local VM is said with where the commands do run", async (t) => {
+  const { h, fake, seen, bot, project } = await setup(t);
+  fake.setDocker({ containers: { "plain-box": { running: true, labels: {} } } });
+  assert.equal((await putPlace(h, bot.id, { kind: "docker", source: "container", name: "plain-box", path: project })).status, 200);
+  assert.equal((await h.fetch(`/api/bots/${bot.id}`, { method: "PATCH", body: JSON.stringify({ computer: "sandbox" }) })).status, 200);
+  await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: "Hello." }) });
+  await seenOf(seen);
+  const engine = fake.dockerCalls().find((args) => args[0] === "exec" && args.includes("claude"));
+  assert.deepEqual(engine!.slice(0, 3), ["exec", "-i", "plain-box"]);
+  await idle(h, bot);
+  const notices = (await messagesOf(h, bot)).filter((m: any) => m.kind === "notice").map((m: any) => m.text).join("\n");
+  assert.match(notices, /Local VM is not there/);
+  assert.match(notices, /Its commands and files run in container plain-box as usual/);
+  assert.doesNotMatch(notices, /on this computer as usual/);
+});

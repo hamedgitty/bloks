@@ -26,7 +26,10 @@ import {
   containerNameFor,
   containerSpec,
   copyPlan,
+  DESKTOP_AS,
+  dockerExecArgs,
   dockerRunArgs,
+  interactiveCommand,
   networkOffSupport,
   placeSupport,
   preambleText,
@@ -640,3 +643,31 @@ function run_(command: string, args: string[], env?: Record<string, string>, inp
   });
 }
 const run = (command: string, args: string[]) => run_(command, args);
+
+// Bloks' desktop image starts as root, but its desktop is cua's, and its
+// computer-use driver refuses any other uid (GitHub 541).
+test("in a Bloks desktop, Bloks runs as cua, the person is shown the same, and a screen that does not answer is not Ready", async () => {
+  assert.deepEqual(dockerExecArgs("bloks-vm-manual", ["sh", "-c", "true"], DESKTOP_AS), ["exec", "-i", "-u", "cua", "-e", "HOME=/home/cua", "bloks-vm-manual", "sh", "-c", "true"]);
+  assert.deepEqual(dockerExecArgs("plain", ["true"]), ["exec", "-i", "plain", "true"]);
+  const desk = { kind: "docker" as const, source: "container" as const, name: "bloks-vm-manual", path: "/work" };
+  assert.equal(interactiveCommand(desk, "claude", DESKTOP_AS), "docker exec -it -u cua -e HOME=/home/cua bloks-vm-manual sh -lc 'claude'");
+  assert.equal(interactiveCommand(desk, "claude"), "docker exec -it bloks-vm-manual sh -lc 'claude'");
+
+  const probe = readProbe(`home=/home/cua\nengine=yes\nversion=2.1.329\nfolder=ok\nnode=yes\nnodeVersion=v18.20.4\ntar=yes\nbloks=yes\nsignedIn=${JSON.stringify({ loggedIn: false })}\n`);
+  const base = { place: desk, driverKind: "claudeAgent", engineName: "Claude Code", command: "claude", probe, localSignIn: false, line: "host" as const, as: DESKTOP_AS };
+  const signedOut = testReport(base);
+  assert.equal(signedOut.signIn?.command, "docker exec -it -u cua -e HOME=/home/cua bloks-vm-manual sh -lc 'claude'");
+  const answered = testReport({ ...base, screen: { ok: true } });
+  assert.equal(answered.checks.find((c) => c.id === "screen")?.label, "Its desktop answers, as cua");
+  const silent = testReport({ ...base, screen: { ok: false, why: "reject Unix peer uid 0 for runtime owned by uid 1000" } });
+  assert.equal(silent.ok, false);
+  assert.equal(silent.checks.find((c) => c.id === "screen")?.ok, false);
+  assert.match(silent.problems.join(" "), /computer-use driver did not answer \(reject Unix peer uid 0/);
+  // no desktop, no screen check
+  assert.equal(testReport({ ...base, as: undefined }).checks.some((c) => c.id === "screen"), false);
+
+  const { desktopBridge } = await import("../server/local-vm.ts");
+  const bridge = desktopBridge("docker", "bloks-vm-manual");
+  assert.deepEqual(bridge.args.slice(1), ["docker", "bloks-vm-manual", "/run/user/1000/bloks-cua.sock"]);
+  assert.match(bridge.args[0], /local-vm-mcp\.(ts|js)$/);
+});

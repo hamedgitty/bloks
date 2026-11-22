@@ -33,8 +33,10 @@ import { signalGroup } from "./drivers/engine-processes.ts";
 import { OWN_GROUP } from "./no-console.ts";
 import type { Gate, GateServer, GateTurn } from "./workplace-gate.ts";
 import { hostLine, type LineHost } from "./workplace-line.ts";
+import { DESKTOP_DRIVER, DESKTOP_LABEL, DESKTOP_SOCKET } from "./desktop-image.ts";
 import {
   AGENT_LABEL,
+  DESKTOP_AS,
   LINE_HOSTS,
   SPEC_LABEL,
   bootstrapArgv,
@@ -63,6 +65,7 @@ import {
   testReport,
   type CopyPlan,
   type DockerImagePlace,
+  type ExecAs,
   type PlaceState,
   type PlaceStatus,
   type TestReport,
@@ -146,6 +149,9 @@ export class Workplaces {
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private locks = new Map<string, Promise<unknown>>();
   private dockerCheck: { at: number; problem: string | null } | null = null;
+  /** Containers of Bloks' desktop image, by name, as last inspected:
+   * everything Bloks runs in one runs as its desktop's user. */
+  private desktops = new Map<string, boolean>();
 
   constructor(deps: WorkplaceDeps) {
     this.deps = deps;
@@ -197,8 +203,15 @@ export class Workplaces {
 
   // ── running a command there ──────────────────────────────────────────
 
+  /** Who Bloks runs as there: cua in a container of Bloks' desktop image,
+   * whose desktop, home and computer-use driver are cua's and which the
+   * driver keeps from root (GitHub 541); otherwise the container's own. */
+  execAs(place: Workplace): ExecAs | undefined {
+    return place.kind === "docker" && this.desktops.get(place.name) ? DESKTOP_AS : undefined;
+  }
+
   private start(place: Workplace, argv: readonly string[], tunnel?: Tunnel): ChildProcessWithoutNullStreams {
-    const [program, args] = place.kind === "ssh" ? [this.ssh, sshArgs(place, argv, tunnel)] : [this.docker, dockerExecArgs(place.name, argv)];
+    const [program, args] = place.kind === "ssh" ? [this.ssh, sshArgs(place, argv, tunnel)] : [this.docker, dockerExecArgs(place.name, argv, this.execAs(place))];
     return spawn(program, args, {
       cwd: homedir(),
       env: process.env,
@@ -276,11 +289,34 @@ export class Workplaces {
   }
 
   private async inspect(name: string): Promise<{ exists: boolean; running: boolean; agent: string; spec: string }> {
-    const ran = await this.dockerRun(["inspect", "--type", "container", "--format", `{{.State.Running}}|{{index .Config.Labels "${AGENT_LABEL}"}}|{{index .Config.Labels "${SPEC_LABEL}"}}`, name]);
-    if (ran.code !== 0) return { exists: false, running: false, agent: "", spec: "" };
-    const [running, agent, spec] = ran.stdout.toString().trim().split("|");
+    const ran = await this.dockerRun(["inspect", "--type", "container", "--format", `{{.State.Running}}|{{index .Config.Labels "${AGENT_LABEL}"}}|{{index .Config.Labels "${SPEC_LABEL}"}}|{{index .Config.Labels "${DESKTOP_LABEL}"}}`, name]);
+    if (ran.code !== 0) {
+      this.desktops.delete(name);
+      return { exists: false, running: false, agent: "", spec: "" };
+    }
+    const [running, agent, spec, desktop] = ran.stdout.toString().trim().split("|");
     const value = (text: string | undefined) => (text && text !== "<no value>" ? text : "");
+    this.desktops.set(name, value(desktop) === "1");
     return { exists: true, running: running === "true", agent: value(agent), spec: value(spec) };
+  }
+
+  /** Whether the container a place names is a running one of Bloks'
+   * desktop image, which an agent working in it can have as its screen
+   * (GitHub 541). Asked before a turn, which looks at its computer
+   * before its place is got ready. */
+  async desktop(place: Workplace): Promise<boolean> {
+    if (place.kind !== "docker" || (await this.dockerProblem())) return false;
+    const now = await this.inspect(place.name);
+    return now.running && Boolean(this.desktops.get(place.name));
+  }
+
+  /** Whether the desktop's computer-use driver answers a session run as
+   * an agent's is, which is what Ready has to mean for its screen. */
+  private async screen(place: Workplace): Promise<{ ok: true } | { ok: false; why: string }> {
+    const ran = await this.collect(this.start(place, [DESKTOP_DRIVER, "call", "health_report", "{}", "--socket", DESKTOP_SOCKET]), { timeoutMs: 20_000 });
+    if (ran.code === 0) return { ok: true };
+    const said = ran.stderr.replace(/\s+/g, " ").trim().slice(-200);
+    return { ok: false, why: said || (ran.signal ? "it took too long to answer" : `it exited with ${ran.code}`) };
   }
 
   /** One thing at a time per place: two lanes starting at once must not
@@ -797,6 +833,10 @@ export class Workplaces {
     }
     const probe = readProbe(ran.stdout.toString());
     if (probe.home.startsWith("/")) this.deps.onSeen?.(input.bot.id, place, { home: probe.home, node: Boolean(probe.node) });
+    // A desktop's screen is part of Ready: the checks above all pass for
+    // a session that cannot reach it (GitHub 541).
+    const as = this.execAs(place);
+    const screen = as ? await this.screen(place) : undefined;
     this.setStatus(input.bot.id, place, "ready");
     if (!this.running(input.bot.id)) this.scheduleIdle(input.bot.id, place);
     return testReport({
@@ -808,6 +848,8 @@ export class Workplaces {
       install: input.install,
       localSignIn: localSignInFiles(input.driverKind).length > 0,
       line: place.kind === "ssh" ? "tunnel" : gate.line ? "line" : "host",
+      ...(as ? { as } : {}),
+      ...(screen ? { screen } : {}),
     });
   }
 

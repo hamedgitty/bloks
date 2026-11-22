@@ -519,6 +519,7 @@ import {
 import {
   claimVm,
   configureVmLease,
+  desktopBridge,
   currentVmLease,
   releaseVm,
   touchVmIdle,
@@ -9140,7 +9141,14 @@ async function startClaimedTurn(
       // only ever needed their shell, on a VM that was never set up
       // (GitHub 388). The agent and the person are both told.
       let vmMissing: string | null = null;
-      if (wants === "sandbox" && reach.computers.includes("vm")) {
+      // An agent that works in a container of Bloks' own desktop image,
+      // run by the person, has that desktop as its Local VM: it is where
+      // its commands already run, and Bloks' Local VM, set up or not, is
+      // another machine (GitHub 541). Nothing to claim from other agents.
+      const placeDesktop = wants === "sandbox" && reach.computers.includes("vm") && placeNow?.kind === "docker" && (await workplaces.desktop(placeNow));
+      if (placeDesktop && placeNow?.kind === "docker") {
+        integrations.localComputer = desktopBridge("docker", placeNow.name);
+      } else if (wants === "sandbox" && reach.computers.includes("vm")) {
         if (!claimVm(task.id, bot.id)) {
           const holder = currentVmLease();
           const other = holder ? store.bot(holder.botId)?.name : null;
@@ -9162,7 +9170,9 @@ async function startClaimedTurn(
             role: "bot",
             ...(blok ? { from: bot.id } : {}),
             kind: "notice",
-            text: `${bot.name} runs this turn without a screen: the Local VM is not there (${vmMissing.replace(/[.\s]+$/, "")}). Its commands and files run on this computer as usual. Set the Local VM up in Settings, under Local VM, or choose another Computer in ${bot.name}'s settings.`,
+            // where its commands do run, which a turn working elsewhere
+            // says in its own notice: never "this computer" beside that
+            text: `${bot.name} runs this turn without a screen: the Local VM is not there (${vmMissing.replace(/[.\s]+$/, "")}). Its commands and files run ${placeNow ? places.placePhrase(placeNow) : "on this computer"} as usual. Set the Local VM up in Settings, under Local VM, or choose another Computer in ${bot.name}'s settings.`,
           });
           broadcast({ kind: "message", threadId: roomId, message: notice });
         }
@@ -9807,6 +9817,8 @@ async function startClaimedTurn(
           persona +
           (integrations.computer && instance.driverKind !== "boxAgent"
             ? " You have a machine of your own. Reach for the computer tools whenever a task is easier done than described: browsing, checking how something looks, or anything that wants a real desktop."
+            : placeDesktop && placeNow
+              ? ` You have the Linux desktop of the container you work in, ${placeNow.kind === "docker" ? placeNow.name : ""}. Reach for the computer tools whenever seeing or clicking beats describing: browsing, signing in, checking how something looks. It is the same machine your commands run on.`
             : vmTurn
               ? " You have your own Linux desktop in a private VM on this machine. Reach for the computer tools whenever seeing or clicking beats describing: browsing, signing in, checking how something looks. The desktop is yours alone; files under ~/workspace survive the VM being recycled, everything else is disposable."
               : integrations.localComputer
@@ -10061,7 +10073,7 @@ async function startClaimedTurn(
       }
       if (standingNext) standing.set(task.id, standingNext);
       if (integrations.computer) startScreenPoller(bot.id);
-      if (integrations.localComputer) drivingMac.add(bot.id);
+      if (integrations.localComputer && !placeDesktop) drivingMac.add(bot.id);
       else drivingMac.delete(bot.id);
       // A local command has not heard a pending engine handoff or CLI note.
       if (!command) store.markTaskDispatched(bot.id, task.id, instanceId, credential ? CLI_COMMAND : undefined);
@@ -27093,7 +27105,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
         return json(res, 200, { report, ...view() });
       }
       if (sub === "sign-in") {
-        const command = places.signInThereCommand(place, driverKind, places.remoteCommand(place, localCli));
+        await workplaces.desktop(place);
+        const command = places.signInThereCommand(place, driverKind, places.remoteCommand(place, localCli), workplaces.execAs(place));
         if (!command) return json(res, 409, { error: `${engine} signs in some other way. Its own guide says how.` });
         return json(res, 200, { opened: openInTerminal(`place-${bot.id}`, command), command });
       }

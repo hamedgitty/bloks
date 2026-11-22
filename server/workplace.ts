@@ -40,6 +40,7 @@ import { basename } from "node:path";
 import { CLI_DRIVERS } from "./agent-cli.ts";
 import { ACP_SPECS } from "./drivers/acp.ts";
 import { installCommand } from "./engine-commands.ts";
+import { DESKTOP_HOME, DESKTOP_USER } from "./desktop-image.ts";
 
 // ── the shape of a place ───────────────────────────────────────────────
 
@@ -574,9 +575,22 @@ export function dockerRunArgs(place: DockerImagePlace, botId: string, localFolde
   return args;
 }
 
+/** Who Bloks runs as in a container, when it is not the container's own
+ * user. A container of Bloks' own desktop image starts as root, but its
+ * desktop, its home and its computer-use driver are cua's, and the
+ * driver refuses root (server/desktop-image.ts, GitHub 541). */
+export interface ExecAs {
+  user: string;
+  home: string;
+}
+
+export const DESKTOP_AS: ExecAs = { user: DESKTOP_USER, home: DESKTOP_HOME };
+
+const execAsArgs = (as?: ExecAs) => (as ? ["-u", as.user, "-e", `HOME=${as.home}`] : []);
+
 /** `docker exec -i`, for the engine or anything else that runs there. */
-export function dockerExecArgs(container: string, argv: readonly string[]): string[] {
-  return ["exec", "-i", container, ...argv];
+export function dockerExecArgs(container: string, argv: readonly string[], as?: ExecAs): string[] {
+  return ["exec", "-i", ...execAsArgs(as), container, ...argv];
 }
 
 // ── ssh command lines ──────────────────────────────────────────────────
@@ -779,7 +793,7 @@ export function noVersionProbe(driverKind: string): boolean {
 // ── the Test button's answer ───────────────────────────────────────────
 
 export interface Check {
-  id: "reach" | "folder" | "engine" | "signedIn" | "node" | "bloks" | "tar";
+  id: "reach" | "folder" | "engine" | "signedIn" | "node" | "bloks" | "tar" | "screen";
   /** null is a check that could not be made. */
   ok: boolean | null;
   label: string;
@@ -812,19 +826,19 @@ const SIGN_IN_COMMANDS: Record<string, string> = {
 };
 
 /** How to open an interactive shell there with one command running. */
-export function interactiveCommand(place: Workplace, command: string): string {
+export function interactiveCommand(place: Workplace, command: string, as?: ExecAs): string {
   if (place.kind === "ssh") return `ssh -t${place.port ? ` -p ${place.port}` : ""} ${place.host} ${shQuote(command)}`;
-  return `docker exec -it ${place.name} sh -lc ${shQuote(command)}`;
+  return `docker exec -it ${execAsArgs(as).join(" ")}${as ? " " : ""}${place.name} sh -lc ${shQuote(command)}`;
 }
 
 /** The sign-in command for this engine on that side, as one line to
  * run in Terminal here, or null when the engine signs in some other way. */
-export function signInThereCommand(place: Workplace, driverKind: string, command: string): string | null {
+export function signInThereCommand(place: Workplace, driverKind: string, command: string, as?: ExecAs): string | null {
   const own = SIGN_IN_COMMANDS[driverKind];
   if (!own) return null;
   const name = own.split(" ")[0];
   const run = name === command ? own : [command, ...own.split(" ").slice(1)].join(" ");
-  return interactiveCommand(place, run);
+  return interactiveCommand(place, run, as);
 }
 
 /** How each engine installs, as one line to run on the other side. The
@@ -837,9 +851,9 @@ export function installFor(driverKind: string): string | undefined {
 }
 
 /** The install command for this engine, run there. */
-export function installThereCommand(place: Workplace, install: string | undefined): string | null {
+export function installThereCommand(place: Workplace, install: string | undefined, as?: ExecAs): string | null {
   if (!install) return null;
-  return interactiveCommand(place, install);
+  return interactiveCommand(place, install, as);
 }
 
 /** Puts a probe into checks and sentences. */
@@ -854,6 +868,12 @@ export function testReport(input: {
   localSignIn: boolean;
   /** How Bloks will be reached, so a failed check names the right way. */
   line: "tunnel" | "host" | "line";
+  /** Who Bloks runs as there, when not the container's own user. */
+  as?: ExecAs;
+  /** A container of Bloks' desktop image: whether its computer-use
+   * driver answered a session run the way an agent's is (GitHub 541).
+   * Absent where there is no such desktop. */
+  screen?: { ok: true } | { ok: false; why: string };
 }): TestReport {
   const { place, probe, engineName } = input;
   const where = placeLabel(place);
@@ -869,7 +889,7 @@ export function testReport(input: {
 
   if (!probe.engine) {
     checks.push({ id: "engine", ok: false, label: `${engineName} is not installed` });
-    const install = installThereCommand(place, input.install);
+    const install = installThereCommand(place, input.install, input.as);
     problems.push(
       `${engineName} is not installed ${placePhrase(place).replace(/ over SSH$/, "")}, or not as ${input.command}.` +
         (install ? ` Install it there: ${install}` : ` Install it there, or set the engine command to where it is.`),
@@ -881,7 +901,7 @@ export function testReport(input: {
     const signed = signedInThere(input.driverKind, probe);
     if (signed === false) {
       checks.push({ id: "signedIn", ok: false, label: "Not signed in there" });
-      const command = signInThereCommand(place, input.driverKind, input.command);
+      const command = signInThereCommand(place, input.driverKind, input.command, input.as);
       if (command) report.signIn = { command };
       report.canCopySignIn = input.localSignIn;
       problems.push(
@@ -915,6 +935,14 @@ export function testReport(input: {
         : `The container could not reach Bloks at host.docker.internal. Docker on this computer may not offer that address; approvals and the bloks command will not work until it does.`,
     );
   } else if (input.line !== "line") checks.push({ id: "bloks", ok: null, label: "Could not check the way back to Bloks (no curl, wget or Node)" });
+
+  if (input.screen?.ok) checks.push({ id: "screen", ok: true, label: `Its desktop answers, as ${input.as?.user ?? "its user"}` });
+  else if (input.screen) {
+    checks.push({ id: "screen", ok: false, label: "Its desktop does not answer" });
+    problems.push(
+      `${where} is a Bloks desktop, but its computer-use driver did not answer (${input.screen.why.replace(/[.\s]+$/, "")}), so an agent there would have no screen. Check that the container started with its desktop, and look at /var/log/supervisor/cua-driver.error.log in it.`,
+    );
+  }
 
   report.ok = checks.every((check) => check.ok !== false);
   return report;

@@ -63,7 +63,7 @@ if (verb === "inspect") {
   const c = state.containers[name];
   if (!c) fail("Error: No such container: " + name);
   const label = (k) => (c.labels ?? {})[k] ?? "<no value>";
-  console.log([c.running ? "true" : "false", label("dev.bloks.agent"), label("dev.bloks.spec")].join("|"));
+  console.log([c.running ? "true" : "false", label("dev.bloks.agent"), label("dev.bloks.spec"), label("dev.bloks.vm")].join("|"));
   process.exit(0);
 }
 if (verb === "network") { console.log(state.bridge ?? ""); process.exit(0); }
@@ -97,10 +97,23 @@ if (verb === "cp") {
 }
 if (verb === "exec") {
   let i = 1;
-  while (args[i] === "-i" || args[i] === "-it") i++;
+  let user = "root";
+  for (;;) {
+    if (args[i] === "-i" || args[i] === "-it") { i++; continue; }
+    if (args[i] === "-u") { user = args[i + 1]; i += 2; continue; }
+    if (args[i] === "-e") { i += 2; continue; }
+    break;
+  }
   const name = args[i];
   const c = state.containers[name];
   if (!c || !c.running) fail("Error response from daemon: container " + name + " is not running");
+  // a Bloks desktop's computer-use driver, which refuses anyone but cua
+  if (args[i + 1] === "/usr/local/libexec/bloks/cua-driver") {
+    if (user !== "cua") fail("reject Unix peer uid 0 for runtime owned by uid 1000");
+    if (c.screen === false) fail("connect: no such file or directory");
+    console.log("{}");
+    process.exit(0);
+  }
   const child = spawn(args[i + 1], args.slice(i + 2), { stdio: "inherit", env: { PATH: process.env.FAKE_THERE_PATH, HOME: process.env.FAKE_HOME } });
   for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => child.kill(signal));
   child.on("exit", (code, signal) => process.exit(code ?? (signal ? 137 : 1)));
