@@ -106,7 +106,8 @@ const failed = (error: unknown) => {
 
 /** What the person does in the panel: asked of the app for its own
  * browser, of the server for one it keeps. */
-const act = (action: BrowserDo, arg?: string | DialogAnswer) =>
+/** Something done to the Bloks browser: a page, a tab, the wheel. */
+export const act = (action: BrowserDo, arg?: string | DialogAnswer) =>
   browserHome() === "server"
     ? api("/api/browser/do", { method: "POST", body: JSON.stringify({ action, ...(arg === undefined ? {} : { arg }) }) }).then(said, failed)
     : (window.bloks?.browserDo?.(action, arg) ?? Promise.resolve(null)).then(said, failed);
@@ -184,11 +185,14 @@ export function DockedBrowser({
   shown,
   botNames,
   agent,
+  flat = false,
 }: {
   shown: boolean;
   botNames?: Record<string, string>;
   /** The chat's agent, whose tabs the strip can be narrowed to. */
   agent?: { id: string; name: string };
+  /** The dock's strip draws each page as a tab of its own: no strip here. */
+  flat?: boolean;
 }) {
   const { home } = useBrowserWhere();
   // a server's browser may have come to be since the page loaded
@@ -196,13 +200,13 @@ export function DockedBrowser({
     if (shown) refreshBrowser(loadFromServer);
   }, [shown]);
   if (home !== "own" && home !== "server") return null;
-  return <BrowserPanel resizing={!shown} botNames={botNames} onServer={home === "server"} agent={agent} />;
+  return <BrowserPanel resizing={!shown} botNames={botNames} onServer={home === "server"} agent={agent} flat={flat} />;
 }
 
 // Every tab, or only the chat's agent's (tabsInScope), kept on this device
 // like the dock's width: it is about how this screen is used.
 const SCOPE_KEY = "bloks-browser-scope";
-function useTabScope(): [TabScope, (next: TabScope) => void] {
+export function useTabScope(): [TabScope, (next: TabScope) => void] {
   const [scope, setScope] = useState<TabScope>(() => {
     try {
       return localStorage.getItem(SCOPE_KEY) === "agent" ? "agent" : "all";
@@ -226,11 +230,13 @@ function BrowserPanel({
   botNames,
   onServer,
   agent,
+  flat,
 }: {
   resizing: boolean;
   botNames?: Record<string, string>;
   onServer: boolean;
   agent?: { id: string; name: string };
+  flat: boolean;
 }) {
   const state = useBrowserState();
   const { missing } = useBrowserWhere();
@@ -306,13 +312,22 @@ function BrowserPanel({
   }, [state?.closed]); // eslint-disable-line react-hooks/exhaustive-deps
   const allTabs = state?.tabs ?? [];
   const [scope, setScope] = useTabScope();
+  const scopeButton = agent && (
+    <HeaderButton
+      label={scope === "agent" ? t("browserPanel.scope.agentOn", { name: agent.name, count: allTabs.length - tabsInScope(allTabs, scope, agent.id, state?.activeTabId ?? null).length }) : t("browserPanel.scope.agentOff", { name: agent.name })}
+      pressed={scope === "agent"}
+      onClick={() => setScope(scope === "agent" ? "all" : "agent")}
+    >
+      <Bot size={15} />
+    </HeaderButton>
+  );
   const tabs = tabsInScope(allTabs, scope, agent?.id, state?.activeTabId ?? null);
   const hiddenTabs = allTabs.length - tabs.length;
   const nameOf = (botId: string, fallback: string) => botNames?.[botId] ?? fallback;
 
   return (
     <div ref={setRoot} role="region" aria-label={t("browserPanel.bloksBrowser")} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-card">
-      <div className="flex h-[38px] shrink-0 items-center gap-1 px-1.5">
+      <div hidden={flat} className="flex h-[38px] shrink-0 items-center gap-1 px-1.5">
         <Tabs tabs={tabs} activeId={state?.activeTabId ?? null} faces={store.bots} nameOf={nameOf} />
         <HeaderButton label={t("browserPanel.newTab")} disabled={absent} onClick={() => void act("newTab")}>
           <Plus size={16} />
@@ -333,7 +348,7 @@ function BrowserPanel({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 border-t px-1.5 py-1.5">
+      <div className={cn("flex shrink-0 items-center gap-1 px-1.5 py-1.5", !flat && "border-t")}>
         <HeaderButton label={t("common.back")} disabled={!active?.canGoBack} onClick={() => void act("back")}>
           <ArrowLeft size={15} />
         </HeaderButton>
@@ -358,6 +373,7 @@ function BrowserPanel({
           )}
         </HeaderButton>
         {extensions && !absent && <ExtensionsMenu source={extensions} onOpened={(view) => onServer && setExtensionView(view)} />}
+        {flat && scopeButton}
       </div>
 
       {line && (

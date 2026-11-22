@@ -4101,10 +4101,30 @@ agent's computer, a turn's timeline, a room's topic and extension panels
 not, on which panel, and with which panels open as tabs, per
 conversation; its width is per device.
 
+**Panes on every side.** The right pane is the dock as it was; a tab can
+move to the left, the top or the bottom from its pane's ⋯ menu ("Move this
+tab to", `moveTab`), which opens a pane on that side with a strip, a +, a
+⋯ and expand of its own, so a bottom pane can sit alongside the right
+one. Which side each panel sits on, and each side's pane, are remembered
+per conversation (`sides`, `panes`); the left pane's width and the top
+and bottom panes' heights per device (`bloks-dock-sizes`), as the right
+pane's width is. A panel is drawn by the pane on its side only. Expand
+(the button, the ⋯ menu, or ⇧⌘\ for the pane the keyboard is in or the
+first one open) lays a pane over the conversation until it is put back.
+A room keeps its one pane on the right.
+
 **Tabs and the +.** The panels open in a conversation are tabs along the
 dock's top, in the order they were opened, each with its own close
 (`closeTab`): closing the one in front brings its neighbour forward, and
-closing the last hides the dock. What a panel keeps (open files, shells)
+closing the last hides the dock. A panel that holds several things shows
+each as a tab of its own, flat in the strip: every shell of a terminal in
+the dock (an agent's own with its badge; `useTerminalTabs`, the terminal
+panel then drawing no strip of its own and its menu floating in the
+screen's corner) and every page of the browser (in the chat's scope). Its
+× closes that shell or page, + on it opens another, and the panel keeps
+them all drawn while hidden, so a shell's screen and a page stay as they
+were. Such a panel's tabs move together, since one terminal and one
+browser surface are drawn per window. What a panel keeps (open files, shells)
 outlives its tab. The + lists every kind the conversation offers, with
 what each holds (Changes says `+12 −3`, Files how many are open) and its
 key: Shift+Cmd+F Files, Shift+Cmd+D Changes, Shift+Cmd+B the browser and
@@ -4113,9 +4133,7 @@ Cmd+J the terminal, heard in the desktop app only (`panelChord`,
 something opens it. A place stored before tabs comes back with the panel
 it showed as its one tab. On a wide window the tabs sit in the window's
 top row, right over the dock (below); where the dock covers the chat, or
-there is no top row, they sit at the dock's own top. Beside the hide
-button, expand lays the dock over the conversation, as a narrow window
-does, until it is put back (for the window, not stored).
+there is no top row, they sit at the dock's own top.
 
 **Files** (the panel's id is still `docs`) is the agent's shared files
 folder as a tree with a filter box (`src/lib/fileTree.ts`, from `GET

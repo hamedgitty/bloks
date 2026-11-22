@@ -36,3 +36,11 @@ export function panelChord(e: KeyLike, platform: Platform): PanelKey | null {
   }
   return letter === "j" ? "terminal" : null;
 }
+
+/** ⇧⌘\ (Ctrl+Shift+\ off a Mac): expand the pane the keyboard is in, or
+ * the first one open, over the conversation, and put it back. */
+export function expandChord(e: KeyLike, platform: Platform): boolean {
+  if (!e.shiftKey || e.altKey) return false;
+  const mod = platform === "mac" ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  return mod && (e.code === "Backslash" || e.key === "|" || e.key === "\\");
+}

@@ -17,7 +17,7 @@
 // broken. Input goes back as a POST per keystroke burst, which is more
 // requests than a socket would take and exactly as many round trips, over
 // loopback to this same machine.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -406,6 +406,36 @@ const lastActive = new Map<string, string>();
 /** Panels to tell when a tab is asked for from outside them. */
 const tabAsks = new Set<(botId: string, id: string) => void>();
 
+// What an open panel's tabs are, for the side dock to draw each as a tab
+// of its own (dock/SideDock.tsx, flat), and how it closes and adds one.
+interface PanelTabs {
+  tabs: readonly TerminalInfo[];
+  current: string | null;
+  close: (id: string) => void;
+  add: () => void;
+}
+const panelTabs = new Map<string, PanelTabs>();
+const tabListeners = new Set<() => void>();
+const noTabs: PanelTabs | null = null;
+function publishTabs(botId: string, tabs: PanelTabs | null) {
+  if (tabs) panelTabs.set(botId, tabs);
+  else panelTabs.delete(botId);
+  for (const l of tabListeners) l();
+}
+
+/** One agent's terminal tabs as its open panel has them, or null while
+ * no panel is drawn. */
+export function useTerminalTabs(botId: string): PanelTabs | null {
+  return useSyncExternalStore(
+    (l) => {
+      tabListeners.add(l);
+      return () => void tabListeners.delete(l);
+    },
+    () => panelTabs.get(botId) ?? noTabs,
+    () => noTabs,
+  );
+}
+
 /** One of an agent's tabs brought to the front, by an agent's `bloks dock
  * show terminal <tab>`: the open panel switches to it, and a panel opened
  * later starts on it. Never takes the keyboard. */
@@ -431,6 +461,7 @@ export function TerminalPanel({
   onPopOut,
   askNew = 0,
   focusNonce = 0,
+  flat = false,
 }: {
   botId: string;
   botName: string;
@@ -442,6 +473,9 @@ export function TerminalPanel({
   askNew?: number;
   /** Bumped to put the keyboard in the open tab, after the panel moved. */
   focusNonce?: number;
+  /** In the side dock, whose strip draws each shell as a tab of its own:
+   * no strip here, only the menu, floating over the screen. */
+  flat?: boolean;
 }) {
   const { list, lost, register } = useTerminalStream(botId);
   const [layout, setLayout] = useTerminalLayout();
@@ -643,6 +677,11 @@ export function TerminalPanel({
   // new one is added unless the panel is about to open the first anyway.
   const askedNew = useRef(0);
   const loaded = list !== null;
+  // what the dock's strip draws, while this panel is drawn
+  useEffect(() => {
+    publishTabs(botId, { tabs, current: current?.id ?? null, close: (id) => void closeTab(id), add: () => void newTab() });
+  }, [botId, tabs, current?.id, closeTab, newTab]);
+  useEffect(() => () => publishTabs(botId, null), [botId]);
   useEffect(() => {
     if (!loaded || askNew === askedNew.current) return;
     askedNew.current = askNew;
@@ -676,17 +715,21 @@ export function TerminalPanel({
       aria-label={t("terminal.regionLabel", { name: botName })}
       // where the conversation looks to tell whose ⌘⇧] it is
       data-terminal-panel={mode}
-      className="flex h-full min-h-0 w-full min-w-0 flex-col bg-card"
+      className={cn("flex h-full min-h-0 w-full min-w-0 flex-col bg-card", flat && "relative")}
     >
       <div
         className={cn(
           "flex h-[38px] shrink-0 items-center gap-1 px-1.5",
           fill && "titlebar-drag",
           underLights && "pl-[84px]",
+          // in the dock its tabs are the dock's; only the menu stays, in
+          // the screen's corner
+          flat && "absolute right-1.5 top-1 z-10 h-8 rounded-lg bg-card/90 px-0.5 opacity-70 shadow-sm transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
         )}
       >
         <div
           role="tablist"
+          hidden={flat}
           aria-label={t("terminal.terminalTabs")}
           aria-orientation="horizontal"
           className="flex min-w-0 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
@@ -764,10 +807,12 @@ export function TerminalPanel({
             );
           })}
         </div>
-        <HeaderButton label={t("terminal.newTerminalTab")} onClick={() => void newTab()} disabled={!loaded || tabs.length >= MAX_TABS}>
-          <Plus size={16} />
-        </HeaderButton>
-        <div className="min-w-2 flex-1 self-stretch" />
+        {!flat && (
+          <HeaderButton label={t("terminal.newTerminalTab")} onClick={() => void newTab()} disabled={!loaded || tabs.length >= MAX_TABS}>
+            <Plus size={16} />
+          </HeaderButton>
+        )}
+        {!flat && <div className="min-w-2 flex-1 self-stretch" />}
         {current && !current.pty && (
           <span
             title={t("terminal.fullScreenProgramsWontWork")}
@@ -786,7 +831,7 @@ export function TerminalPanel({
           onCloseTab={() => current && void closeTab(current.id)}
           onClosed={() => !renaming && focusTab(current?.id ?? null)}
         />
-        {mode !== "window" && (
+        {mode !== "window" && !flat && (
           <LayoutMenu
             layout={layout}
             onLayout={setLayout}
@@ -799,7 +844,7 @@ export function TerminalPanel({
             <Minimize2 size={15} />
           </HeaderButton>
         )}
-        {mode !== "window" && (
+        {mode !== "window" && !flat && (
           <HeaderButton label={t("terminal.hideTheTerminalItsShells")} onClick={onClose}>
             <X size={16} />
           </HeaderButton>

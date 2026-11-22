@@ -57,12 +57,30 @@ export interface DockDoc {
   size: number;
 }
 
-export interface DockPlace {
+/** Where a pane sits around the conversation. The right one is the dock
+ * as it always was; a tab can move to any of the four. */
+export type DockSide = "right" | "left" | "bottom" | "top";
+export const DOCK_SIDES: readonly DockSide[] = ["right", "left", "bottom", "top"];
+export type OtherSide = Exclude<DockSide, "right">;
+
+/** One pane besides the right: open or not, and on which panel. */
+export interface DockPane {
   open: boolean;
-  /** The panel shown, or last shown before the dock was closed. */
   panel: DockPanel | null;
-  /** The panels open as tabs, in the order they were opened. */
+}
+
+export interface DockPlace {
+  /** The right pane: open or not, and the panel shown there, or last shown
+   * before it was closed. */
+  open: boolean;
+  panel: DockPanel | null;
+  /** The panels open as tabs, in the order they were opened, whichever
+   * pane each is in. */
   tabs: DockPanel[];
+  /** The panes on the other sides, and which side each panel moved to
+   * (a panel not named here is on the right). */
+  panes?: Partial<Record<OtherSide, DockPane>>;
+  sides?: Partial<Record<DockPanel, OtherSide>>;
   docs: DockDoc[];
   /** The document in front, among `docs`. */
   doc: string | null;
@@ -72,7 +90,45 @@ export interface DockPlace {
 
 export interface DockState {
   places: Record<string, DockPlace>;
+  /** The right pane's width. */
   width: number;
+  /** The other panes' width (left) and height (top, bottom). */
+  sizes?: Partial<Record<OtherSide, number>>;
+}
+
+/** A pane across the top or bottom: how tall it may be. */
+export const ACROSS_SIZE = { min: 160, chat: 220, fallback: 300 } as const;
+
+export function clampPaneHeight(height: number, room: number): number {
+  const max = Math.max(ACROSS_SIZE.min, room - ACROSS_SIZE.chat);
+  return Math.round(Math.min(max, Math.max(ACROSS_SIZE.min, Number.isFinite(height) ? height : ACROSS_SIZE.fallback)));
+}
+
+/** Which side a panel sits on in this conversation. */
+export function sideOf(place: DockPlace, panel: DockPanel): DockSide {
+  return place.sides?.[panel] ?? "right";
+}
+
+/** A side's pane: open or not, on which panel. */
+export function paneOf(place: DockPlace, side: DockSide): DockPane {
+  if (side === "right") return { open: place.open, panel: place.panel };
+  return place.panes?.[side] ?? { open: false, panel: null };
+}
+
+function withPane(place: DockPlace, side: DockSide, pane: DockPane): DockPlace {
+  if (side === "right") return { ...place, open: pane.open, panel: pane.panel };
+  return { ...place, panes: { ...place.panes, [side]: pane } };
+}
+
+/** The tabs in one side's pane, in the order they were opened. */
+export function tabsOn(place: DockPlace, side: DockSide): DockPanel[] {
+  return place.tabs.filter((t) => sideOf(place, t) === side);
+}
+
+/** Whether a panel is on screen, in whichever pane it is in. */
+export function shownAnywhere(place: DockPlace, panel: DockPanel): boolean {
+  const pane = paneOf(place, sideOf(place, panel));
+  return pane.open && pane.panel === panel;
 }
 
 /** Most documents one conversation keeps open; the oldest behind the one
@@ -124,7 +180,38 @@ function forgetOldest(places: Record<string, DockPlace>): Record<string, DockPla
 /** Open on a panel. Asking again for the one shown keeps it shown: the
  * ribbon picks a panel, it does not close the dock (the X does). */
 export function showPanel(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
-  return withPlace(state, key, (p) => ({ ...p, open: true, panel, tabs: withTab(p.tabs, panel) }), now);
+  return withPlace(state, key, (p) => withPane({ ...p, tabs: withTab(p.tabs, panel) }, sideOf(p, panel), { open: true, panel }), now);
+}
+
+/**
+ * A tab moved to another side: it is shown there, in that side's pane,
+ * and the pane it left brings its neighbour forward, or closes when it
+ * has none. Remembered per conversation.
+ */
+export function moveTab(state: DockState, key: string, panel: DockPanel, side: DockSide, now = Date.now()): DockState {
+  const place = placeIn(state, key);
+  const from = sideOf(place, panel);
+  if (from === side) return showPanel(state, key, panel, now);
+  return withPlace(
+    state,
+    key,
+    (p) => {
+      let next = p;
+      const left = paneOf(p, from);
+      if (left.panel === panel) {
+        const rest = tabsOn(p, from).filter((t) => t !== panel);
+        const at = Math.max(0, tabsOn(p, from).indexOf(panel));
+        const neighbour = rest[Math.min(at, rest.length - 1)] ?? null;
+        next = withPane(next, from, { open: left.open && neighbour !== null, panel: neighbour });
+      }
+      const sides = { ...next.sides };
+      if (side === "right") delete sides[panel];
+      else sides[panel] = side;
+      next = { ...next, sides, tabs: withTab(next.tabs, panel) };
+      return withPane(next, side, { open: true, panel });
+    },
+    now,
+  );
 }
 
 /** A tab closed: the one beside it comes forward if it was in front, and
@@ -132,18 +219,23 @@ export function showPanel(state: DockState, key: string, panel: DockPanel, now =
  * shells) is not this tab's to end. */
 export function closeTab(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
   const place = placeIn(state, key);
-  const at = place.tabs.indexOf(panel);
-  if (at < 0 && place.panel !== panel) return state;
+  const side = sideOf(place, panel);
+  const pane = paneOf(place, side);
+  const onSide = tabsOn(place, side);
+  const at = onSide.indexOf(panel);
+  if (at < 0 && pane.panel !== panel) return state;
   const tabs = place.tabs.filter((p) => p !== panel);
-  if (place.panel !== panel) return withPlace(state, key, (p) => ({ ...p, tabs }), now);
-  const next = tabs[Math.min(Math.max(at, 0), tabs.length - 1)] ?? null;
-  return withPlace(state, key, (p) => ({ ...p, tabs, panel: next, open: p.open && next !== null }), now);
+  if (pane.panel !== panel) return withPlace(state, key, (p) => ({ ...p, tabs }), now);
+  const rest = onSide.filter((p) => p !== panel);
+  const next = rest[Math.min(Math.max(at, 0), rest.length - 1)] ?? null;
+  return withPlace(state, key, (p) => withPane({ ...p, tabs }, side, { open: pane.open && next !== null, panel: next }), now);
 }
 
 /** Closed, with everything in it kept for when it opens again. */
-export function hideDock(state: DockState, key: string, now = Date.now()): DockState {
-  if (!placeIn(state, key).open) return state;
-  return withPlace(state, key, (p) => ({ ...p, open: false }), now);
+export function hideDock(state: DockState, key: string, now = Date.now(), side: DockSide = "right"): DockState {
+  const pane = paneOf(placeIn(state, key), side);
+  if (!pane.open) return state;
+  return withPlace(state, key, (p) => withPane(p, side, { ...pane, open: false }), now);
 }
 
 /** The header's toggle: closed opens on the panel last shown (or the
@@ -169,8 +261,9 @@ export function pickPanel(place: DockPlace, offered: readonly DockPanel[]): Dock
  * person did not ask for. */
 export function dropPanel(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
   const place = placeIn(state, key);
-  if (place.panel !== panel) return place.tabs.includes(panel) ? withPlace(state, key, (p) => ({ ...p, tabs: p.tabs.filter((t) => t !== panel) }), now) : state;
-  return withPlace(state, key, (p) => ({ ...p, open: false, panel: null, tabs: p.tabs.filter((t) => t !== panel) }), now);
+  const side = sideOf(place, panel);
+  if (paneOf(place, side).panel !== panel) return place.tabs.includes(panel) ? withPlace(state, key, (p) => ({ ...p, tabs: p.tabs.filter((t) => t !== panel) }), now) : state;
+  return withPlace(state, key, (p) => withPane({ ...p, tabs: p.tabs.filter((t) => t !== panel) }, side, { open: false, panel: null }), now);
 }
 
 // ── opened by an agent's work ──────────────────────────────────────────
@@ -203,8 +296,8 @@ export function mayReveal(
 ): boolean {
   if (!key || isRoomKey(key)) return false;
   if (room.width < REVEAL_WIDTH || room.declined) return false;
-  if (place.open && place.panel === panel) return false;
-  return !(place.open && room.typingInDock);
+  if (shownAnywhere(place, panel)) return false;
+  return !(anyPaneOpen(place) && room.typingInDock);
 }
 
 /**
@@ -226,7 +319,12 @@ export function mayShow(
   if (!key || isRoomKey(key)) return false;
   if (room.width < REVEAL_WIDTH) return false;
   if (room.declinedIn !== undefined && room.declinedIn === room.turn) return false;
-  return !(place.open && room.typingInDock);
+  return !(anyPaneOpen(place) && room.typingInDock);
+}
+
+/** Whether any of a conversation's panes is open. */
+export function anyPaneOpen(place: DockPlace): boolean {
+  return DOCK_SIDES.some((side) => paneOf(place, side).open);
 }
 
 /** A file opened in the dock: in front if it is open already, else added
@@ -239,7 +337,8 @@ export function openDoc(state: DockState, key: string, doc: Omit<DockDoc, "id">,
     (p) => {
       const known = p.docs.find((d) => d.id === id);
       const docs = known ? p.docs.map((d) => (d.id === id ? { ...d, ...doc, id } : d)) : [...p.docs, { ...doc, id }];
-      return { ...p, open: true, panel: "docs", tabs: withTab(p.tabs, "docs"), docs: docs.length > MAX_DOCS ? docs.slice(docs.length - MAX_DOCS) : docs, doc: id };
+      const kept = docs.length > MAX_DOCS ? docs.slice(docs.length - MAX_DOCS) : docs;
+      return withPane({ ...p, tabs: withTab(p.tabs, "docs"), docs: kept, doc: id }, sideOf(p, "docs"), { open: true, panel: "docs" });
     },
     now,
   );
@@ -265,6 +364,8 @@ export function closeDoc(state: DockState, key: string, id: string, now = Date.n
 
 export const DOCK_KEY = "bloks-dock";
 export const DOCK_WIDTH_KEY = "bloks-dock-width";
+/** The other panes' width and heights, on this device too. */
+export const DOCK_SIZES_KEY = "bloks-dock-sizes";
 /** The browser's own width, from before the dock: the dock opens at it
  * the first time, so a browser someone had sized stays that size. */
 export const LEGACY_BROWSER_WIDTH_KEY = "bloks-browser-width";
@@ -287,7 +388,48 @@ function cleanDoc(raw: unknown): DockDoc | null {
 }
 
 /** What was stored, or nothing for anything in it that is not a place. */
-export function parseDock(raw: string | null, width: string | null, legacyWidth: string | null = null): DockState {
+const OTHER_SIDES = new Set<string>(["left", "bottom", "top"]);
+
+/** The panes on the other sides, and which panel moved where, as stored:
+ * anything that is not a side or a panel is dropped. */
+function cleanSides(v: Record<string, unknown>, tabs: readonly DockPanel[]): Pick<DockPlace, "panes" | "sides"> {
+  const out: Pick<DockPlace, "panes" | "sides"> = {};
+  if (v.sides && typeof v.sides === "object") {
+    const sides: Partial<Record<DockPanel, OtherSide>> = {};
+    for (const [panel, side] of Object.entries(v.sides as Record<string, unknown>)) {
+      if (PANEL_SET.has(panel) && typeof side === "string" && OTHER_SIDES.has(side)) sides[panel as DockPanel] = side as OtherSide;
+    }
+    if (Object.keys(sides).length) out.sides = sides;
+  }
+  if (v.panes && typeof v.panes === "object") {
+    const panes: Partial<Record<OtherSide, DockPane>> = {};
+    for (const [side, pane] of Object.entries(v.panes as Record<string, unknown>)) {
+      if (!OTHER_SIDES.has(side) || !pane || typeof pane !== "object") continue;
+      const p = pane as Record<string, unknown>;
+      const panel = typeof p.panel === "string" && PANEL_SET.has(p.panel) && tabs.includes(p.panel as DockPanel) && out.sides?.[p.panel as DockPanel] === side ? (p.panel as DockPanel) : null;
+      panes[side as OtherSide] = { open: p.open === true && panel !== null, panel };
+    }
+    if (Object.keys(panes).length) out.panes = panes;
+  }
+  return out;
+}
+
+/** The other panes' sizes, as stored. */
+export function parseSizes(raw: string | null): Partial<Record<OtherSide, number>> {
+  try {
+    const said = raw ? JSON.parse(raw) : null;
+    const out: Partial<Record<OtherSide, number>> = {};
+    for (const side of ["left", "bottom", "top"] as const) {
+      const n = Number(said?.[side]);
+      if (Number.isFinite(n) && n > 0) out[side] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function parseDock(raw: string | null, width: string | null, legacyWidth: string | null = null, sizes: string | null = null): DockState {
   let saved: Record<string, unknown> = {};
   try {
     const parsed = raw ? JSON.parse(raw) : null;
@@ -305,16 +447,20 @@ export function parseDock(raw: string | null, width: string | null, legacyWidth:
     // a place kept before there were tabs had one: the panel it showed
     const said = Array.isArray(v.tabs) ? v.tabs.filter((t): t is DockPanel => typeof t === "string" && PANEL_SET.has(t)) : panel ? [panel] : [];
     const tabs = [...new Set(panel ? withTab(said, panel) : said)];
-    places[key] = { open: v.open === true && panel !== null, panel, tabs, docs, doc, at: typeof v.at === "number" ? v.at : 0 };
+    const placed = cleanSides(v, tabs);
+    // the right pane shows a panel only while it is on the right
+    const right = panel && !placed.sides?.[panel] ? panel : null;
+    places[key] = { open: v.open === true && right !== null, panel: right, tabs, docs, doc, at: typeof v.at === "number" ? v.at : 0, ...placed };
   }
   const n = Number(width ?? legacyWidth);
-  return { places: forgetOldest(places), width: Number.isFinite(n) && n > 0 ? n : DOCK_SIZE.fallback };
+  return { places: forgetOldest(places), width: Number.isFinite(n) && n > 0 ? n : DOCK_SIZE.fallback, sizes: parseSizes(sizes) };
 }
 
 export function saveDock(storage: Storage | undefined, state: DockState): void {
   try {
     storage?.setItem(DOCK_KEY, JSON.stringify(state.places));
     storage?.setItem(DOCK_WIDTH_KEY, String(Math.round(state.width)));
+    storage?.setItem(DOCK_SIZES_KEY, JSON.stringify(state.sizes ?? {}));
   } catch {
     /* storage refused: the dock still works for this window */
   }
@@ -327,7 +473,12 @@ const local = (): Storage | undefined => (typeof localStorage === "undefined" ? 
 function load(): DockState {
   const storage = local();
   try {
-    return parseDock(storage?.getItem(DOCK_KEY) ?? null, storage?.getItem(DOCK_WIDTH_KEY) ?? null, storage?.getItem(LEGACY_BROWSER_WIDTH_KEY) ?? null);
+    return parseDock(
+      storage?.getItem(DOCK_KEY) ?? null,
+      storage?.getItem(DOCK_WIDTH_KEY) ?? null,
+      storage?.getItem(LEGACY_BROWSER_WIDTH_KEY) ?? null,
+      storage?.getItem(DOCK_SIZES_KEY) ?? null,
+    );
   } catch {
     return { places: {}, width: DOCK_SIZE.fallback };
   }
@@ -368,14 +519,20 @@ const turns = new Map<string, string>();
 
 /** The person did something to the dock of this conversation: if what an
  * agent's work opened is going out of sight, that is a no to it. */
-function byHand(key: string, next: { open: boolean; panel: DockPanel | null }) {
+function byHand(key: string, next: DockPlace, picked?: DockPanel) {
   const opened = revealed.get(key);
-  if (next.open && next.panel) declined.get(key)?.delete(next.panel);
+  if (picked && shownAnywhere(next, picked)) declined.get(key)?.delete(picked);
   if (!opened) return;
-  if (!next.open || next.panel !== opened) {
+  if (!shownAnywhere(next, opened)) {
     revealed.delete(key);
     declined.set(key, (declined.get(key) ?? new Map()).set(opened, turns.get(key) ?? ""));
   }
+}
+
+/** A change the person made, judged by byHand, then kept. */
+function byPerson(key: string, next: DockState, picked?: DockPanel) {
+  byHand(key, placeIn(next, key), picked);
+  commit(next);
 }
 
 /** Something to bring forward inside a panel an agent asked for: a file
@@ -467,32 +624,16 @@ export const dock = {
     pending.delete(key);
     if (Date.now() - waiting.at < PENDING_ASK_MS) queueMicrotask(() => dock.ask(waiting.ask));
   },
-  show: (key: string, panel: DockPanel) => {
-    byHand(key, { open: true, panel });
-    commit(showPanel(read(), key, panel));
-  },
-  hide: (key: string) => {
-    byHand(key, { open: false, panel: null });
-    commit(hideDock(read(), key));
-  },
-  toggle: (key: string, offered: readonly DockPanel[]) => {
-    const next = placeIn(toggleDock(read(), key, offered), key);
-    byHand(key, { open: next.open, panel: next.panel });
-    commit(toggleDock(read(), key, offered));
-  },
-  closeTab: (key: string, panel: DockPanel) => {
-    const next = placeIn(closeTab(read(), key, panel), key);
-    byHand(key, { open: next.open, panel: next.panel });
-    commit(closeTab(read(), key, panel));
-  },
-  drop: (key: string, panel: DockPanel) => {
-    if (placeIn(read(), key).panel === panel) byHand(key, { open: false, panel: null });
-    commit(dropPanel(read(), key, panel));
-  },
-  openDoc: (key: string, doc: Omit<DockDoc, "id">) => {
-    byHand(key, { open: true, panel: "docs" });
-    commit(openDoc(read(), key, doc));
-  },
+  show: (key: string, panel: DockPanel) => byPerson(key, showPanel(read(), key, panel), panel),
+  hide: (key: string, side: DockSide = "right") => byPerson(key, hideDock(read(), key, Date.now(), side)),
+  toggle: (key: string, offered: readonly DockPanel[]) => byPerson(key, toggleDock(read(), key, offered), placeIn(toggleDock(read(), key, offered), key).panel ?? undefined),
+  closeTab: (key: string, panel: DockPanel) => byPerson(key, closeTab(read(), key, panel)),
+  /** A tab moved to another side, by the person. */
+  move: (key: string, panel: DockPanel, side: DockSide) => byPerson(key, moveTab(read(), key, panel, side), panel),
+  /** A side pane's width (left) or height (top, bottom), on this device. */
+  setSize: (side: OtherSide, size: number) => commit({ ...read(), sizes: { ...read().sizes, [side]: size } }),
+  drop: (key: string, panel: DockPanel) => byPerson(key, dropPanel(read(), key, panel)),
+  openDoc: (key: string, doc: Omit<DockDoc, "id">) => byPerson(key, openDoc(read(), key, doc), "docs"),
   selectDoc: (key: string, id: string) => commit(selectDoc(read(), key, id)),
   closeDoc: (key: string, id: string) => commit(closeDoc(read(), key, id)),
   setWidth: (width: number) => commit({ ...read(), width }),

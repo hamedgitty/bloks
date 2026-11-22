@@ -67,6 +67,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "dockFiles", group: "navigation", keys: [["Mod", "Shift", "F"]], does: "libShortcuts.does.dockFiles", when: "libShortcuts.when.inAChat", desktopOnly: true },
   { id: "dockChanges", group: "navigation", keys: [["Mod", "Shift", "D"]], does: "libShortcuts.does.dockChanges", when: "libShortcuts.when.inAChat", desktopOnly: true },
   { id: "dockBrowser", group: "navigation", keys: [["Mod", "Shift", "B"]], does: "libShortcuts.does.dockBrowser", when: "libShortcuts.when.inAChat", desktopOnly: true },
+  { id: "dockExpand", group: "navigation", keys: [["Mod", "Shift", "\\"]], does: "libShortcuts.does.dockExpand", when: "libShortcuts.when.inAChat" },
   { id: "dockTerminal", group: "navigation", keys: [["Mod", "J"]], does: "libShortcuts.does.dockTerminal", when: "libShortcuts.when.inAChat", desktopOnly: true },
   { id: "back", group: "navigation", keys: [["Mod", "["]], does: "libShortcuts.does.back" },
   { id: "forward", group: "navigation", keys: [["Mod", "]"]], does: "libShortcuts.does.forward" },

@@ -20,18 +20,19 @@ import { MessageComponent } from "./Gallery";
 import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
-import { showTerminalTab } from "./Terminal";
-import { BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
-import { Activity, FileDiff, Folder, Globe, PanelRight } from "@/components/icons";
-import { SideDock, type DockPane } from "./dock/SideDock";
+import { showTerminalTab, useTerminalTabs } from "./Terminal";
+import { act as browserAct, BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
+import { Activity, Bot as BotIcon, FileDiff, Folder, Globe, PanelRight } from "@/components/icons";
+import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
 import { ChangesPanel, useLaneChanges } from "./dock/ChangesPanel";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
-import { chatKey, dock, placeIn, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
-import { browserStatus, computerStatus, currentTurn, strongest, turnComputerUse } from "@/lib/dockActivity";
-import { dockChord, panelChord } from "@/lib/dockKeys";
+import { chatKey, dock, DOCK_SIDES, paneOf, placeIn, shownAnywhere, sideOf, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
+import { browserStatus, computerStatus, currentTurn, strongest, tabsInScope, turnComputerUse } from "@/lib/dockActivity";
+import { tabLabel } from "@/lib/appBrowser";
+import { dockChord, expandChord, panelChord } from "@/lib/dockKeys";
 import { changesRound, totalsLabel } from "@/lib/laneChanges";
 import { moveTerminal } from "@/lib/terminalLayout";
 import { stepTab, terminalChord } from "@/lib/terminalTabs";
@@ -334,6 +335,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   const openTerminalRef = useRef<() => void>(() => setTerminalOpen(true));
   // what ⇧⌘F, ⇧⌘D, ⇧⌘B and ⌘J do, set once the dock is read
   const panelKeyRef = useRef<(panel: DockPanel) => void>(() => {});
+  const expandKeyRef = useRef<() => void>(() => {});
 
   const streaming = state.streaming[bot.threadId];
   const provisioning = state.provisioning[bot.id];
@@ -474,6 +476,10 @@ export function ChatView({ bot }: { bot: Bot }) {
         // ⌘⌥B shows and hides the side dock, as ⌘B does the sidebar
         e.preventDefault();
         toggleDockRef.current();
+      } else if (!e.defaultPrevented && expandChord(e, platformOf())) {
+        // ⇧⌘\ expands the pane the keyboard is in, or the first one open
+        e.preventDefault();
+        expandKeyRef.current();
       } else if (!e.defaultPrevented && window.bloks) {
         // ⇧⌘F, ⇧⌘D, ⇧⌘B and ⌘J bring a panel forward, in the desktop
         // app only: a browser keeps those keys for itself
@@ -776,7 +782,8 @@ export function ChatView({ bot }: { bot: Bot }) {
   useLayoutEffect(() => dock.setCurrent(dockKey), [dockKey]);
   const dockState = useDockState();
   const dockPlace = placeIn(dockState, dockKey);
-  const dockShows = (panel: DockPanel) => dockPlace.open && dockPlace.panel === panel;
+  // on screen in whichever pane it sits in (src/lib/dock.ts, sideOf)
+  const dockShows = (panel: DockPanel) => shownAnywhere(dockPlace, panel);
 
   const terminal = useTerminalDock({
     open: terminalOpen,
@@ -796,7 +803,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   terminalShown.current = terminalOpen && (!terminal.inDock || dockShows("terminal"));
   toggleTerminalRef.current = () => {
     if (!terminal.inDock) return setTerminalOpen((open) => !open);
-    if (dockShows("terminal")) return dock.hide(dockKey);
+    if (dockShows("terminal")) return dock.hide(dockKey, sideOf(dockPlace, "terminal"));
     setTerminalOpen(true);
     dock.show(dockKey, "terminal");
   };
@@ -811,11 +818,11 @@ export function ChatView({ bot }: { bot: Bot }) {
       dock.drop(dockKey, "terminal");
       return;
     }
-    if (terminalOpen && !dockShows("terminal") && dockPlace.panel !== "terminal") dock.show(dockKey, "terminal");
+    if (terminalOpen && !dockShows("terminal") && paneOf(dockPlace, sideOf(dockPlace, "terminal")).panel !== "terminal") dock.show(dockKey, "terminal");
   }, [terminal.inDock]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (dockShows("terminal") && terminal.inDock && !terminalOpen) setTerminalOpen(true);
-  }, [dockKey, dockPlace.open, dockPlace.panel]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dockKey, dockShows("terminal")]); // eslint-disable-line react-hooks/exhaustive-deps
   useSettingsObservation({
     "terminal.height": { status: "observed", value: terminal.layout.sizes.bottom },
     "terminal.open": { status: "observed", value: terminalOpen },
@@ -877,6 +884,8 @@ export function ChatView({ bot }: { bot: Bot }) {
 
   // the running extensions' panels, as one more panel of the dock
   const extensionsPane = useExtensionsPane();
+  const terminalTabs = useTerminalTabs(bot.id);
+  const [browserScope] = useTabScope();
   // what this conversation's turns changed, for the Changes panel and the
   // count beside it in the + menu
   const laneId = bot.activeTaskId ?? bot.threadId;
@@ -908,7 +917,17 @@ export function ChatView({ bot }: { bot: Bot }) {
             icon: <Globe size={15} />,
             keys: keysFor("dockBrowser", platformOf(), Boolean(window.bloks))[0],
             status: browserStatus(browserState),
-            render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} agent={{ id: bot.id, name: bot.name }} />,
+            // each page a tab of its own in the dock's strip
+            items: tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).map((tab) => ({
+              id: tab.id,
+              label: tabLabel(tab) || t("browserPanel.newTab"),
+              title: tab.url,
+              active: tab.id === browserState?.activeTabId,
+              onSelect: () => void browserAct("selectTab", tab.id),
+              onClose: () => void browserAct("closeTab", tab.id),
+            })),
+            onAdd: () => void browserAct("newTab"),
+            render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} agent={{ id: bot.id, name: bot.name }} flat />,
           },
         ]
       : []),
@@ -918,6 +937,23 @@ export function ChatView({ bot }: { bot: Bot }) {
       icon: <SquareTerminal size={15} />,
       keys: keysFor("dockTerminal", platformOf(), Boolean(window.bloks))[0],
       keepAlive: true,
+      // each shell a tab of its own in the dock's strip, an agent's own
+      // wearing its badge
+      items: terminal.inDock
+        ? (terminalTabs?.tabs ?? []).map((tab) => ({
+            id: tab.id,
+            label: tab.title,
+            icon: tab.agent ? <BotIcon size={14} className="text-brand-ink" /> : <SquareTerminal size={14} />,
+            title: tab.agent ? t("terminal.agentTab", { name: tab.agent.name, command: tab.agent.command }) : tab.cwd,
+            active: tab.id === terminalTabs?.current,
+            onSelect: () => showTerminalTab(bot.id, tab.id),
+            onClose: () => terminalTabs?.close(tab.id),
+          }))
+        : undefined,
+      onAdd: () => {
+        if (terminalTabs?.tabs.length) terminalTabs.add();
+      },
+      popOut: window.bloks ? terminal.popOut : undefined,
       render: () =>
         terminal.dockSlot ?? <div className="flex h-full items-center justify-center text-small text-muted-foreground">{t("common.loading")}</div>,
     },
@@ -953,10 +989,14 @@ export function ChatView({ bot }: { bot: Bot }) {
   // agent's `bloks dock show` (dock.ask in src/lib/dock.ts)
   const turnNow = useMemo(() => currentTurn(bot.messages).turn, [bot.messages]);
   useLayoutEffect(() => dock.noteTurn(dockKey, turnNow, offered), [dockKey, turnNow, offered.join(" ")]); // eslint-disable-line react-hooks/exhaustive-deps
+  expandKeyRef.current = () => {
+    const side = focusedSide() ?? DOCK_SIDES.find((s) => paneOf(dockPlace, s).open);
+    if (side) toggleExpand(side);
+  };
   panelKeyRef.current = (panel) => {
     if (panel === "terminal") return toggleTerminalRef.current();
     if (!offered.includes(panel)) return;
-    if (dockShows(panel)) return dock.hide(dockKey);
+    if (dockShows(panel)) return dock.hide(dockKey, sideOf(dockPlace, panel));
     dock.show(dockKey, panel);
   };
   // A terminal picked on the ribbon comes into the dock from wherever it sat.
@@ -1406,8 +1446,10 @@ export function ChatView({ bot }: { bot: Bot }) {
           it (terminal/TerminalDock.tsx). */}
       <div ref={terminal.body} className="relative flex min-h-0 min-w-0 flex-1">
       {terminal.slot("left")}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <SideDock side="left" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {terminal.slot("top")}
+      <SideDock side="top" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
       {/* The transcript, and the way back to its end floating over it. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -1545,6 +1587,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         onBranch={(draft) => dispatch({ type: "branchTask", botId: bot.id, taskId: bot.threadId, messageId: draft.id, quote: { author: draft.author, excerpt: draft.excerpt, quote: draft.quote } })}
         branchBlocked={branchWhy}
       />
+      <SideDock side="bottom" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
       </div>
       <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} headSlot={titleSlot ? dockHead : null} />
       </div>

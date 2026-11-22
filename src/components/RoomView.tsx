@@ -1573,7 +1573,7 @@ export function RoomView({ blok }: { blok: Blok }) {
         onQuote={setReplyTo}
       />
       </div>
-      <SideDock placeKey={dockKey} panes={dockPanes} />
+      <SideDock canMove={false} placeKey={dockKey} panes={dockPanes} />
       </div>
       </DockHostContext.Provider>
       {topicDialog && (

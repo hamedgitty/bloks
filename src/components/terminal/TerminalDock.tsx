@@ -174,12 +174,20 @@ export function useTerminalDock({
           }
           askNew={askNew}
           focusNonce={focusNonce}
+          flat={inDock && !fill}
         />,
         holder,
       )
     : null;
 
-  return { layout, setLayout, inDock, body, slot, dockSlot, overlay, panel };
+  /** Opens it in a window of its own, where this page can. */
+  const popOut = way
+    ? () => {
+        way(botId);
+        onClose();
+      }
+    : undefined;
+  return { layout, setLayout, inDock, body, slot, dockSlot, overlay, panel, popOut };
 }
 
 /**

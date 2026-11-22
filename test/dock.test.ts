@@ -17,7 +17,14 @@ import {
   clampDockWidth,
   closeDoc,
   closeTab,
+  clampPaneHeight,
+  ACROSS_SIZE,
   dropPanel,
+  moveTab,
+  paneOf,
+  shownAnywhere,
+  sideOf,
+  tabsOn,
   mayShow,
   hideDock,
   isRoomKey,
@@ -31,7 +38,7 @@ import {
   toggleDock,
   type DockState,
 } from "../src/lib/dock.ts";
-import { dockChord, panelChord } from "../src/lib/dockKeys.ts";
+import { dockChord, expandChord, panelChord } from "../src/lib/dockKeys.ts";
 import { keysFor } from "../src/lib/shortcuts.ts";
 
 const empty = (): DockState => ({ places: {}, width: DOCK_SIZE.fallback });
@@ -365,5 +372,89 @@ describe("shown by an agent on purpose", () => {
     const place = placeIn(dock.get(), key);
     assert.equal(place.panel, "docs");
     assert.equal(place.doc, "ask-doc/notes/a.md");
+  });
+});
+
+describe("panes on every side", () => {
+  test("a tab moved to the bottom opens a pane there, and the right brings its neighbour forward", () => {
+    let s = showPanel(showPanel(empty(), a, "changes", 1), a, "terminal", 2);
+    s = moveTab(s, a, "terminal", "bottom", 3);
+    const place = placeIn(s, a);
+    assert.equal(sideOf(place, "terminal"), "bottom");
+    assert.deepEqual(paneOf(place, "bottom"), { open: true, panel: "terminal" });
+    assert.equal(place.panel, "changes", "the right pane shows what was beside it");
+    assert.equal(place.open, true);
+    assert.deepEqual(tabsOn(place, "right"), ["changes"]);
+    assert.deepEqual(tabsOn(place, "bottom"), ["terminal"]);
+    assert.equal(shownAnywhere(place, "terminal"), true);
+    assert.equal(shownAnywhere(place, "changes"), true, "both panes show at once");
+  });
+
+  test("the last tab leaving a pane closes it, and moving back to the right forgets the side", () => {
+    let s = showPanel(empty(), a, "docs", 1);
+    s = moveTab(s, a, "docs", "left", 2);
+    assert.equal(placeIn(s, a).open, false, "nothing left on the right");
+    s = moveTab(s, a, "docs", "right", 3);
+    const place = placeIn(s, a);
+    assert.equal(sideOf(place, "docs"), "right");
+    assert.equal(place.sides?.docs, undefined);
+    assert.equal(paneOf(place, "left").open, false);
+    assert.equal(place.panel, "docs");
+  });
+
+  test("showing, closing and hiding happen on the panel's own side", () => {
+    let s = moveTab(showPanel(empty(), a, "terminal", 1), a, "terminal", "bottom", 2);
+    s = showPanel(s, a, "changes", 3);
+    s = moveTab(s, a, "changes", "bottom", 4);
+    s = showPanel(s, a, "terminal", 5);
+    assert.equal(paneOf(placeIn(s, a), "bottom").panel, "terminal");
+    s = closeTab(s, a, "terminal", 6);
+    assert.equal(paneOf(placeIn(s, a), "bottom").panel, "changes", "its neighbour on the bottom comes forward");
+    s = hideDock(s, a, 7, "bottom");
+    assert.equal(paneOf(placeIn(s, a), "bottom").open, false);
+    assert.equal(paneOf(placeIn(s, a), "bottom").panel, "changes", "hidden, not forgotten");
+  });
+
+  test("where each panel sits is remembered, and nonsense in it is dropped", () => {
+    let s = moveTab(showPanel(showPanel(empty(), a, "browser", 1), a, "terminal", 2), a, "terminal", "top", 3);
+    const raw = JSON.stringify({ ...s.places, odd: { open: true, panel: "browser", tabs: ["browser"], sides: { browser: "sky", spaceship: "left" }, panes: { sky: { open: true } } } });
+    const back = parseDock(raw, "500", null, JSON.stringify({ bottom: 240, left: "x", top: -3 }));
+    assert.equal(sideOf(placeIn(back, a), "terminal"), "top");
+    assert.deepEqual(paneOf(placeIn(back, a), "top"), { open: true, panel: "terminal" });
+    assert.equal(placeIn(back, a).panel, "browser");
+    assert.equal(placeIn(back, "odd").sides, undefined);
+    assert.equal(placeIn(back, "odd").panes, undefined);
+    assert.deepEqual(back.sizes, { bottom: 240 }, "only sizes that are sizes");
+  });
+
+  test("a pane across keeps room for the conversation", () => {
+    assert.equal(clampPaneHeight(5000, 900), 900 - ACROSS_SIZE.chat);
+    assert.equal(clampPaneHeight(10, 900), ACROSS_SIZE.min);
+    assert.equal(clampPaneHeight(Number.NaN, 900), ACROSS_SIZE.fallback);
+  });
+
+  test("an agent's work does not open a panel already on screen in another pane", () => {
+    const s = moveTab(showPanel(empty(), a, "computer", 1), a, "computer", "bottom", 2);
+    assert.equal(mayReveal(a, placeIn(s, a), "computer", { width: REVEAL_WIDTH + 1, typingInDock: false }), false);
+  });
+
+  test("⇧⌘\\ expands, Ctrl off a Mac", () => {
+    const press = (over: Partial<{ key: string; code: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }>) => ({
+      key: "|", code: "Backslash", metaKey: false, ctrlKey: false, altKey: false, shiftKey: true, ...over,
+    });
+    assert.equal(expandChord(press({ metaKey: true }), "mac"), true);
+    assert.equal(expandChord(press({ ctrlKey: true }), "other"), true);
+    assert.equal(expandChord(press({ metaKey: true, shiftKey: false }), "mac"), false);
+  });
+
+  test("the person moving a panel an agent opened out of sight is not a no; hiding it is", () => {
+    const key = chatKey("move-bot", "lane");
+    dock.setCurrent(key);
+    assert.equal(dock.reveal("computer", REVEAL_WIDTH + 10), true);
+    dock.move(key, "computer", "bottom");
+    assert.equal(shownAnywhere(placeIn(dock.get(), key), "computer"), true);
+    dock.hide(key, "bottom");
+    dock.show(key, "docs");
+    assert.equal(dock.reveal("computer", REVEAL_WIDTH + 10), false, "put away after an agent opened it");
   });
 });
