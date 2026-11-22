@@ -4113,7 +4113,9 @@ Cmd+J the terminal, heard in the desktop app only (`panelChord`,
 something opens it. A place stored before tabs comes back with the panel
 it showed as its one tab. On a wide window the tabs sit in the window's
 top row, right over the dock (below); where the dock covers the chat, or
-there is no top row, they sit at the dock's own top.
+there is no top row, they sit at the dock's own top. Beside the hide
+button, expand lays the dock over the conversation, as a narrow window
+does, until it is put back (for the window, not stored).
 
 **Files** (the panel's id is still `docs`) is the agent's shared files
 folder as a tree with a filter box (`src/lib/fileTree.ts`, from `GET

@@ -22,7 +22,7 @@
 // is drawn while it is shown, and costs nothing otherwise.
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Plus, X } from "@/components/icons";
+import { Maximize2, Minimize2, Plus, X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
@@ -95,7 +95,10 @@ export function SideDock({
     return () => watch.disconnect();
   }, [holder]);
 
-  const narrow = room > 0 && room < DOCK_SIDE_BY_SIDE;
+  // Expanded, the dock covers the chat as it does on a narrow row, until
+  // it is put back; for this window only
+  const [expanded, setExpanded] = useState(false);
+  const narrow = (room > 0 && room < DOCK_SIDE_BY_SIDE) || expanded;
   const width = narrow ? room : clampDockWidth(dragging ?? state.width, room || window.innerWidth);
   // the open tabs, in the order they were opened; the one shown is always
   // among them, even from a place kept before there were tabs
@@ -201,6 +204,11 @@ export function SideDock({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          {(expanded || room >= DOCK_SIDE_BY_SIDE) && (
+            <HeaderButton label={expanded ? t("dock.restore") : t("dock.expand")} pressed={expanded} onClick={() => setExpanded(!expanded)}>
+              {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            </HeaderButton>
+          )}
           <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey)}>
             <X size={16} />
           </HeaderButton>
