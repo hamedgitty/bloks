@@ -271,3 +271,98 @@ test("a turn that could not run answers with why, and a refused steer forgets it
   assert.equal(g.turn.completed, false);
   await g.turn.stop();
 });
+
+test("component source is the exact non-joined request and final row captured at completion", async () => {
+  const rows = [row("older", "user"), row("OLD", "bot")];
+  const f = fixture(rows);
+  f.turn.joining();
+  rows.push(row("OLD END", "bot"));
+  f.turn.ended();
+  const request = row("request", "user", { queued: true });
+  rows.push(request);
+  f.turn.joined(false);
+  f.turn.allowComponentsFor(request.id);
+  request.queued = false;
+  const answer = row("OUR ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] });
+  rows.push(row("earlier note", "bot"), answer);
+  f.turn.ended();
+  rows.push(row("next", "user"), row("OTHER ANSWER", "bot"));
+  const captured = f.turn.componentSource();
+  assert.equal(captured?.message.id, answer.id);
+  assert.equal(captured?.current(), true);
+  answer.ui![0]!.tree.props.changed = "new";
+  assert.equal(captured?.current(), false, "a same-ID changed UI must not pass at handoff");
+  assert.equal(f.turn.componentSource(), null);
+  await f.turn.stop();
+});
+
+test("component source rejects changed or deleted request and reply at handoff", async () => {
+  for (const which of ["request", "reply"] as const) for (const change of ["deleted", "text", "quiet"] as const) {
+    const request = row("request", "user");
+    const answer = row("answer", "bot");
+    const rows = [request, answer];
+    const f = fixture(rows);
+    f.turn.allowComponentsFor(request.id);
+    f.turn.ended();
+    const source = f.turn.componentSource();
+    assert.ok(source);
+    const target = which === "request" ? request : answer;
+    if (change === "text") target.text = "changed";
+    else if (change === "deleted") target.deleted = true;
+    else target.quiet = true;
+    assert.equal(source.current(), false, `${which} ${change}`);
+    await f.turn.stop();
+  }
+});
+
+test("empty, failed, joined and continued turns never borrow a later component source", async () => {
+  for (const kind of ["empty", "failed", "joined", "continued"] as const) {
+    const request = row("request", "user", kind === "joined" ? { midTurn: true } : {});
+    const rows = [request];
+    const f = fixture(rows);
+    f.turn.allowComponentsFor(request.id);
+    if (kind !== "empty") rows.push(row("current", "bot"));
+    if (kind === "continued") f.turn.excludeComponentsOnContinuation();
+    f.turn.ended(undefined, kind !== "failed");
+    rows.push(row("later", "user"), row("later answer", "bot"));
+    assert.equal(f.turn.componentSource(), null, kind);
+    await f.turn.stop();
+  }
+});
+
+test("an allowance names one request: the same one again keeps it; none, or a different second one, captures nothing", async () => {
+  for (const allowed of [["request"], ["request", "request"], [], ["request", "other"], ["other", "request"]]) {
+    const request = row("request", "user");
+    const rows = [request, row("answer", "bot")];
+    const f = fixture(rows);
+    for (const id of allowed) f.turn.allowComponentsFor(id);
+    f.turn.ended();
+    assert.equal(f.turn.componentSource()?.message.id, allowed.every((id) => id === "request") && allowed.length ? "answer" : undefined, allowed.join(","));
+    assert.equal(f.answer(), "answer", "the ordinary reply is unchanged");
+    await f.turn.stop();
+  }
+});
+
+test("a direct start's own row captures only when the reply lookup resolves it, not a neighboring request and its completion", async () => {
+  // answerOverTelegram's lookup (asked): the first owner Telegram text row
+  // written after intake.
+  const lookup = (rows: Message[], before: number) => () => rows.slice(before)
+    .find((m) => m.role === "user" && m.kind === "text" && m.fromTelegram && !m.telegramPerson && !m.telegramDelegate)?.id;
+  for (const neighbor of [false, true]) {
+    const rows: Message[] = [row("history", "user", { fromTelegram: true }), row("HISTORY ANSWER", "bot")];
+    const before = rows.length;
+    if (neighbor) rows.push(row("neighbor", "user", { fromTelegram: true }), row("NEIGHBOR ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] }));
+    const own = row("own", "user", { fromTelegram: true });
+    rows.push(own);
+    const progress = new Progress({ post: async () => 7, remove: async () => {} }, () => false, 30, 30);
+    const turn = new TurnProgress(progress, () => rows, lookup(rows, before), () => Date.now());
+    turn.allowComponentsFor(own.id);
+    rows.push(row("OWN ANSWER", "bot", { ui: [{ fence: 0, tree: { type: "Card", props: {} } }] }));
+    turn.ended();
+    assert.equal(turn.request, neighbor ? "neighbor" : "own");
+    assert.equal(turn.componentSource()?.message.id, neighbor ? undefined : "OWN ANSWER", neighbor ? "a neighbor's row and completion" : "its own row");
+    // The ordinary reply keeps the baseline lookup, not repaired here.
+    assert.equal(telegramReply(turn.answerSpan(), (text) => text).text, neighbor ? "NEIGHBOR ANSWER" : "OWN ANSWER");
+    await turn.stop();
+  }
+});

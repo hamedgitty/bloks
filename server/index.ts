@@ -34,6 +34,7 @@ import { DEVICE_CATEGORIES, noStore, readReport, serveSettingsRead } from "./set
 import { settingsCatalog } from "./settings-catalog.ts";
 import { inspectionRedactor } from "./settings-redaction.ts";
 import { telegramReply, type TelegramText } from "./telegram-reply.ts";
+import { telegramOpenUi } from "./telegram-openui.ts";
 import { TurnProgress } from "./telegram-progress.ts";
 import { inboxState, legacyBinding, migrateTelegram, ownerPairing, pairedChats, replaceTelegramToken, telegramBotName, telegramStatus, type AgentTelegram, type TelegramConfig } from "./telegram-bots.ts";
 import { isPrivateTelegramHuman, knockTelegram, telegramPersonName, migrateTelegramPeople, sameTelegramDelegate, telegramDelegateCurrent, telegramNamesakes, telegramPersonHandle, telegramSender, telegramSenderCurrent, telegramOwnerGroupCurrent, telegramReplySenderCurrent, telegramAudience, telegramSenderLabel, TELEGRAM_PEOPLE_UPGRADE, type TelegramPerson, type TelegramSender, type TelegramOwnerGroup, type TelegramDestination, type TelegramReplySender } from "./telegram-people.ts";
@@ -4222,6 +4223,7 @@ function showHeldErrors(bot: BotRecord, laneId: string, held: string[], why?: st
  * (cancelRecovery).
  */
 function askAgain(bot: BotRecord, laneId: string, recovery: Recovery, delay: number) {
+  for (const waiter of telegramWorking.get(laneId) ?? []) waiter.progress.excludeComponentsOnContinuation();
   // who asked for the turn that failed, before its end clears that
   const requester = laneRequester.get(laneId) ?? askedLast.get(laneId);
   recoveries.set(laneId, recovery);
@@ -6261,6 +6263,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
         !retriedForContext.has(event.threadId) &&
         !outsider(laneRequester.get(event.threadId)) && !person
       ) {
+        for (const waiter of telegramWorking.get(event.threadId) ?? []) waiter.progress.excludeComponentsOnContinuation();
         retriedForContext.add(event.threadId);
         // what this turn was asked, not words still waiting for the next one
         const said = [...store.messagesFor(event.threadId)]
@@ -6544,7 +6547,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       }
       if (!pickingUp && !handedOver) telegramReturns.finish(event.threadId, event.preInputRefusal?.reason);
       if ((!pickingUp || rebuiltEnds) && !handedOver && !refolding) {
-        endTelegramWaits(event.threadId, event.preInputRefusal?.reason ?? (rebuilt === "gone" ? engineGoneNotice(bot.name) : undefined));
+        endTelegramWaits(event.threadId, event.preInputRefusal?.reason ?? (rebuilt === "gone" ? engineGoneNotice(bot.name) : undefined), undefined, event.ok !== false && !rebuilt);
       }
       const heldPerson = laneTelegramPerson.get(event.threadId);
       if (heldPerson && event.ok === false && !handedOver && event.stopReason !== "interrupted" && !rebuilt) {
@@ -7968,6 +7971,10 @@ async function startClaimedTurn(
     /** Told the words a drain or a pause writes down to wait instead of
      * starting this turn, as sendUserMessage is told (tieRecord). */
     onQueued?: (laneId: string, waiting: Message) => void;
+    /** Handed the solo turn's own user row as soon as it is written, before
+     * its engine is asked. Not called when the words wait instead
+     * (onQueued) or no row is written here. */
+    onWritten?: (message: Message) => void;
     /** The user message is already in the transcript (a drained queue);
      * do not append it again. */
     presetMessage?: boolean;
@@ -8053,6 +8060,9 @@ async function startClaimedTurn(
 ): Promise<void> {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such agent"), { status: 404 });
+  if (opts.retry || opts.fallback || opts.carriedOn) {
+    for (const waiter of telegramWorking.get(opts.taskId ?? bot.threadId) ?? []) waiter.progress.excludeComponentsOnContinuation();
+  }
   if (opts.serviceMessages) {
     if (!opts.presetMessage || (opts.roomId && opts.roomId !== opts.taskId) || opts.from || opts.routine || opts.rehearsal || (opts.requester && opts.requester !== "owner")) throw Object.assign(new Error("service wakes require their admitted private owner input"), { status: 409 });
     assertServiceTurn(botId, opts.taskId, opts.serviceMessages);
@@ -8517,6 +8527,7 @@ async function startClaimedTurn(
       ...(groupSource ? { telegramGroup: groupSource } : {}),
       ...(opts.fromSignal ? { fromSignal: opts.fromSignal } : {}),
     });
+    opts.onWritten?.(userMessage);
     // this lane is in exchange with the tab the words came from, for a
     // reply sent later in this conversation
     if (opts.from?.laneId) store.setPeerLane(task.id, opts.from.botId, opts.from.laneId);
@@ -17245,11 +17256,11 @@ function forgetTelegramWaiter(waiter: TelegramWaiter): void {
 
 /** A lane's turn has ended: every request it took captures its answer.
  * `only`, when given, limits it to these requests. */
-function endTelegramWaits(laneId: string, failure?: string, only?: readonly string[]): void {
+function endTelegramWaits(laneId: string, failure?: string, only?: readonly string[], componentEligible = false): void {
   // Signal's waits end at the same moments, for the same reasons.
   for (const waiter of [...(telegramWorking.get(laneId) ?? []), ...(signalWorking.get(laneId) ?? [])]) {
     if (only && !only.includes(waiter.progress.request ?? "")) continue;
-    waiter.progress.ended(failure);
+    waiter.progress.ended(failure, componentEligible);
   }
   // and a change to the home it asked for is for this turn alone
   if (!only) closeHomeRequests(laneId);
@@ -17799,8 +17810,8 @@ const telegramReturns = new TelegramReturns(
 /** A reply to a chat. A failed send is not worth a crash. Only what an
  * agent wrote is read as Markdown: the bot's own lines and a card's
  * summary of a command are shown exactly as they are. */
-async function telegramSay(runtime: TelegramRuntime, chatId: number, text: string, markdown = false): Promise<void> {
-  if (currentTelegram(runtime)) await telegram.send(runtime.token, chatId, text, markdown, undefined, () => Boolean(currentTelegram(runtime))).catch(() => {});
+async function telegramSay(runtime: TelegramRuntime, chatId: number, text: string, markdown = false, still?: () => boolean): Promise<void> {
+  if (currentTelegram(runtime)) await telegram.send(runtime.token, chatId, text, markdown, undefined, () => Boolean(currentTelegram(runtime)) && (!still || still())).catch(() => {});
 }
 
 /** Silent notes in this chat, paused while a card waits on the person. */
@@ -18034,7 +18045,13 @@ function deliverOverTelegram(runtime: TelegramRuntime, chatId: number, text: str
       // access taken back while it ran: the turn was stopped, and
       // nothing more of it goes to them
       if (!current()) return;
-      await telegramSay(runtime, chatId, answer.text, answer.markdown);
+      // This check and the call into the existing sender have no await
+      // between them. A changed row falls back to the ordinary answer.
+      // Once handed over, a changed row no longer stops the rest of it; the
+      // connection and a person's access are still checked before each part.
+      const component = answer.component?.current() ? answer.component.reply() : undefined;
+      await telegramSay(runtime, chatId, component?.text ?? answer.text, component?.markdown ?? answer.markdown,
+        component ? current : undefined);
       await telegramFiles(runtime, chatId, answer.files, delegate);
     });
     runtime.turns.set(chatId, turn);
@@ -18330,17 +18347,21 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
       const sent = steered ?? queueOnLane(botId, laneId, text, who);
       requestId = sent.id;
       progress.joined(Boolean(steered));
+      if (!steered) progress.allowComponentsFor(sent.id);
       progress.observe();
       // the turn may have ended while its engine was asked
       if (!steered) drainSteer(laneId);
       await answeredAfter(botId, laneId, sent.id, progress, runtime.abort.signal);
-      return replyIn(botId, progress);
+      return replyIn(botId, progress, !steered);
     } finally {
       await settled();
     }
   }
   try {
-    await startTurn(botId, text, { replyTo, byYou: true, fromTelegram: true, telegramBinding: binding });
+    // The row this start writes names the request, by its id, before its
+    // engine is asked. Its answer adds what its interface displays only if
+    // the reply lookup finds that same row.
+    await startTurn(botId, text, { replyTo, byYou: true, fromTelegram: true, telegramBinding: binding, onWritten: (row) => progress.allowComponentsFor(row.id) });
     progress.observe();
     // The request owns its return until its consuming turn settles,
     // including a card answered on the phone's schedule.
@@ -18349,21 +18370,39 @@ async function answerOverTelegram(botId: string, text: string, chatId: number, r
   } finally {
     await settled();
   }
-  return replyIn(botId, progress);
+  return replyIn(botId, progress, true);
 }
 
 /** A Telegram turn's reply: what the agent said, and what it left. */
 interface TelegramAnswer extends TelegramText {
   files: telegram.Deliverable[];
+  component?: { reply: () => TelegramText | null; current: () => boolean };
 }
 
-function replyIn(botId: string, progress: TurnProgress): TelegramAnswer {
+function replyIn(botId: string, progress: TurnProgress, componentEligible = false): TelegramAnswer {
   // A turn that could not run says why, as a request held through a
   // restart is told (telegramReturns), and left nothing to send.
   const failure = progress.failure;
   if (failure !== undefined) return { text: redactSecrets(failure), markdown: false, files: [] };
   const messages = progress.answerSpan();
-  return { ...telegramReply(messages, redactSecrets), files: deliverablesIn(botId, messages) };
+  const answer: TelegramAnswer = { ...telegramReply(messages, redactSecrets), files: deliverablesIn(botId, messages) };
+  if (!componentEligible) return answer;
+  const source = progress.componentSource();
+  const bot = store.bot(botId);
+  if (source && bot) {
+    const disabled = [...(bot.withoutComponents ?? [])];
+    const current = () => {
+      const latest = store.bot(botId);
+      return Boolean(latest && JSON.stringify(latest.withoutComponents ?? []) === JSON.stringify(disabled) && source.current());
+    };
+    answer.component = {
+      current,
+      // Render only at handoff, using the current secret redactor. An
+      // unexpected rendering failure leaves the ordinary reply intact.
+      reply: () => { try { return telegramOpenUi(source.message, disabled, redactSecrets); } catch { return null; } },
+    };
+  }
+  return answer;
 }
 
 /**
