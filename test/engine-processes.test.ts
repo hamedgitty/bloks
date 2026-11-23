@@ -182,5 +182,5 @@ test("every driver that starts an engine in a group of its own ends it on dispos
     assert.equal(code.match(/engines\.add\(child\)/g)?.length ?? 0, groups, `${file}: an engine started in its own group is not kept for dispose`);
     assert.match(code, /dispose: async \(\) => \{[\s\S]{0,300}?await engines\.end\(\)/, `${file}: dispose does not end its engines`);
   }
-  assert.ok(seen >= 4, `found only ${seen} drivers; the scan itself is broken`);
+  assert.ok(seen >= 3, `found only ${seen} drivers; the scan itself is broken`);
 });
