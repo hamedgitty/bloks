@@ -48,4 +48,25 @@ function TooltipContent({
   );
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+/** A control's name on hover and on keyboard focus, in place of the
+ * browser's slow, plain title. Wraps exactly one element. */
+function Tip({
+  label,
+  children,
+  side,
+}: {
+  label: React.ReactNode;
+  children: React.ReactElement;
+  side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"];
+}) {
+  return (
+    <TooltipProvider delayDuration={300} skipDelayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side={side}>{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+export { Tip, Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };

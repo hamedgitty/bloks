@@ -26,6 +26,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Camera,
+  Check,
   Copy,
   ExternalLink,
   File as FileIcon,
@@ -42,6 +44,12 @@ import {
   Puzzle,
   RotateCw,
   Server,
+  Trash2,
+  ViewportLaptop,
+  ViewportMonitor,
+  ViewportPhone,
+  ViewportResponsive,
+  ViewportTablet,
   Settings,
   SquareTerminal,
   X,
@@ -54,8 +62,15 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { confirm } from "@/components/ui/confirm";
+import { Tip } from "@/components/ui/tooltip";
+import { MINI_BUTTON } from "@/components/dock/MiniDock";
+import { fitIn, setViewport, sizeWords, useViewport, viewportOf, VIEWPORTS, type ViewportPreset } from "@/lib/browserViewport";
 import { toast } from "@/components/ui/toast";
 import { AgentAvatar } from "@/components/Avatar";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
@@ -292,13 +307,18 @@ function BrowserPanel({
   // while something is drawn over it, while the edge is dragged (the view
   // would lag the drag a frame behind) and once the panel is gone. A
   // server's browser draws its page here instead, and needs none of it.
+  // a chosen viewport: the app lays the page out at it and fits it in
+  const preset = useViewport();
   const report = useCallback(() => {
     if (onServer) return;
     const box = page.current?.getBoundingClientRect();
     // a blank tab shows what can be previewed instead of an empty page
     const hidden = !box || over || resizing || blank || document.visibilityState === "hidden";
-    void window.bloks?.browserBounds?.(hidden ? null : { x: box.left, y: box.top, width: box.width, height: box.height });
-  }, [over, resizing, onServer, blank]);
+    const chosen = viewportOf(preset);
+    void window.bloks?.browserBounds?.(
+      hidden ? null : { x: box.left, y: box.top, width: box.width, height: box.height, ...(chosen.size ? { emulate: { ...chosen.size, mobile: Boolean(chosen.mobile) } } : {}) },
+    );
+  }, [over, resizing, onServer, blank, preset]);
   useLayoutEffect(() => {
     if (onServer) return;
     let frame = 0;
@@ -479,6 +499,100 @@ function useAgentShells(agentId: string | undefined, on = true): TerminalInfo[] 
 const MENU_TRIGGER =
   "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
+const VIEWPORT_ICON: Record<ViewportPreset, ReactNode> = {
+  responsive: <ViewportResponsive size={15} />,
+  mobile: <ViewportPhone size={15} />,
+  tablet: <ViewportTablet size={15} />,
+  "4:3": <ViewportMonitor size={15} />,
+  "16:10": <ViewportLaptop size={15} />,
+};
+
+const viewportName = (id: ViewportPreset) => t(viewportOf(id).label);
+
+/** The viewports as choices in a menu, the one in use ticked, each with
+ * its size or its shape. */
+function ViewportItems() {
+  const now = useViewport();
+  return (
+    <>
+      {VIEWPORTS.map((v) => (
+        <DropdownMenuItem key={v.id} role="menuitemradio" aria-checked={now === v.id} onSelect={() => setViewport(v.id)} className="gap-3">
+          <span className="flex-1">{t(v.label)}</span>
+          {now === v.id && <Check size={15} className="shrink-0 text-brand-ink" />}
+          {v.size && <span className="shrink-0 text-caption tabular-nums text-muted-foreground">{v.note ?? sizeWords(v.size)}</span>}
+        </DropdownMenuItem>
+      ))}
+    </>
+  );
+}
+
+/** The viewport, from the minimized browser's header: its icon says which. */
+export function MiniViewport() {
+  const now = useViewport();
+  const label = t("browserViewport.button", { name: viewportName(now) });
+  return (
+    <DropdownMenu modal={false}>
+      <Tip label={label}>
+        <DropdownMenuTrigger aria-label={label} className={MINI_BUTTON}>
+          {VIEWPORT_ICON[now]}
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent align="end" className="min-w-[230px]">
+        <ViewportItems />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** The minimized browser's shape: the chosen viewport's, or the page's
+ * usual one at the panel's own size. */
+export function useMiniAspect(): number {
+  const chosen = viewportOf(useViewport());
+  return chosen.size ? chosen.size.height / chosen.size.width : 0.62;
+}
+
+/** The page in front, saved as a picture: the app's own browser takes it
+ * at full size, a server's gives the picture it shows the panel. */
+async function saveScreenshot(url?: string) {
+  try {
+    let data: string | null = null;
+    let type = "image/png";
+    if (browserHome() === "server") {
+      const got = (await api("/api/browser/screen?after=0")) as { jpeg?: string };
+      if (got.jpeg) {
+        data = got.jpeg;
+        type = "image/jpeg";
+      }
+    } else {
+      const got = (await window.bloks?.browserDo?.("screenshot")) as { png?: string } | null | undefined;
+      data = got?.png ?? null;
+    }
+    if (!data) throw new Error(t("browserPanel.screenshotNone"));
+    const link = document.createElement("a");
+    link.href = `data:${type};base64,${data}`;
+    link.download = `${hostLabel(url) || "page"}-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.${type === "image/png" ? "png" : "jpg"}`;
+    link.click();
+    toast.success(t("browserPanel.screenshotSaved"));
+  } catch (e) {
+    toast.error((e as Error).message || t("browserPanel.screenshotNone"));
+  }
+}
+
+/** Every site's cookies and stored data forgotten, on a yes: signed out of
+ * everything this browser was signed in to. */
+async function clearBrowsing() {
+  const yes = await confirm({
+    title: t("browserPanel.clearTitle"),
+    body: t("browserPanel.clearBody"),
+    confirmLabel: t("browserPanel.clearData"),
+    destructive: true,
+  });
+  if (!yes) return;
+  const said = (await act("forgetSites")) as { error?: string } | null | undefined;
+  if (said && "error" in said && said.error) toast.error(said.error);
+  else toast.success(t("browserPanel.cleared"));
+}
+
 /** The servers the chat's agent started in its terminal tabs, by the
  * addresses they printed, each opened here with a click. */
 function ServersMenu({ agent, tabs }: { agent: { id: string; name: string }; tabs?: readonly BrowserTab[] }) {
@@ -487,9 +601,11 @@ function ServersMenu({ agent, tabs }: { agent: { id: string; name: string }; tab
   const servers = previewsFrom(shells, []);
   return (
     <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger aria-label={t("browserPanel.servers")} title={t("browserPanel.servers")} className={MENU_TRIGGER}>
-        <Server size={15} />
-      </DropdownMenuTrigger>
+      <Tip label={t("browserPanel.servers")}>
+        <DropdownMenuTrigger aria-label={t("browserPanel.servers")} className={MENU_TRIGGER}>
+          <Server size={15} />
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-[280px]">
         <DropdownMenuLabel>{t("browserPanel.servers")}</DropdownMenuLabel>
         {servers.length === 0 ? (
@@ -537,12 +653,15 @@ function BrowserMore({
 }) {
   const { dispatch } = useStore();
   const page = hostLabel(url) ? url : undefined;
+  const viewport = useViewport();
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger aria-label={t("browserPanel.more")} title={t("browserPanel.more")} className={MENU_TRIGGER}>
+      <Tip label={t("browserPanel.more")}>
+      <DropdownMenuTrigger aria-label={t("browserPanel.more")} className={MENU_TRIGGER}>
         <MoreHorizontal size={16} />
         {downloading && <span aria-hidden className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-brand" />}
       </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="min-w-[240px]">
         <DropdownMenuItem disabled={!page} onSelect={onOpenOutside}>
           <ExternalLink />
@@ -560,7 +679,19 @@ function BrowserMore({
           <Copy />
           {t("browserPanel.copyLink")}
         </DropdownMenuItem>
+        <DropdownMenuItem disabled={!page} onSelect={() => void saveScreenshot(url)}>
+          <Camera />
+          {t("browserPanel.saveScreenshot")}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger icon={VIEWPORT_ICON[viewport]} value={viewportName(viewport)}>
+            {t("browserViewport.title")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="min-w-[230px]">
+            <ViewportItems />
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuCheckboxItem checked={shelf} onCheckedChange={onShelf}>
           <span className="flex-1">{t("browserPanel.downloads")}</span>
           {downloading && <span className="text-caption text-muted-foreground">{t("browserPanel.downloading")}</span>}
@@ -575,6 +706,10 @@ function BrowserMore({
         <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>
           <Settings />
           {t("browserPanel.browserSettings")}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void clearBrowsing()} className="text-destructive focus:text-destructive">
+          <Trash2 />
+          {t("browserPanel.clearData")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -740,6 +875,8 @@ function DialogBar({ dialog, url, control }: { dialog: BrowserDialog; url: strin
  * not yet. */
 function SizeReporter() {
   const layer = useRef<HTMLDivElement>(null);
+  // a chosen viewport is the size the page lays out at, whatever the box
+  const preset = useViewport();
   useLayoutEffect(() => {
     const box = layer.current;
     if (!box) return;
@@ -750,10 +887,12 @@ function SizeReporter() {
       const width = Math.floor(rect.width);
       const height = Math.floor(rect.height);
       const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-      const key = `${width}x${height}@${scale}`;
+      const chosen = viewportOf(preset);
+      const key = `${width}x${height}@${scale}:${preset}`;
       if (width < 200 || height < 150 || key === last) return;
       last = key;
-      void api("/api/browser/viewport", { method: "POST", body: JSON.stringify({ width, height, scale }) }).catch(() => {
+      const body = chosen.size ? { ...chosen.size, scale, mobile: Boolean(chosen.mobile) } : { width, height, scale };
+      void api("/api/browser/viewport", { method: "POST", body: JSON.stringify(body) }).catch(() => {
         last = "";
       });
     };
@@ -768,7 +907,7 @@ function SizeReporter() {
       clearTimeout(timer);
       watch.disconnect();
     };
-  }, []);
+  }, [preset]);
   return <div ref={layer} aria-hidden className="pointer-events-none absolute inset-0" />;
 }
 
@@ -823,6 +962,7 @@ function Surface({
   const closed = useRef(onClosed);
   closed.current = onClosed;
   const touch = useRef<{ id: number; x: number; y: number; lastX: number; lastY: number; moved: boolean } | null>(null);
+  const fitNow = useRef({ left: 0, top: 0, scale: 1 });
   const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
 
   useEffect(() => {
@@ -874,7 +1014,7 @@ function Surface({
       e.preventDefault();
       if (drives.current) return;
       const lines = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? el.clientHeight : 1;
-      send.current?.wheel({ ...pointOn(el, e), dx: e.deltaX * lines, dy: e.deltaY * lines, mods: modsOf(e) });
+      send.current?.wheel({ ...pointOn(el, e, fitNow.current), dx: e.deltaX * lines, dy: e.deltaY * lines, mods: modsOf(e) });
     };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
@@ -885,6 +1025,21 @@ function Surface({
   };
 
   const shown = frame && (frameFor === undefined || frame.tab === frameFor) ? frame : null;
+  // A page at the panel's size fills it; one at a chosen viewport larger
+  // than the panel is drawn smaller to fit, in the middle, and the
+  // pointer is read back to the page's own scale (pointOn).
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const el = surface.current;
+    if (!el) return;
+    const measure = () => setBox({ width: el.clientWidth, height: el.clientHeight });
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
+  const fit = shown && box.width ? fitIn(box, { width: shown.width, height: shown.height }) : { scale: 1, left: 0, top: 0 };
+  fitNow.current = fit;
   return (
     <div
       ref={surface}
@@ -896,7 +1051,7 @@ function Surface({
         if (e.pointerType === "mouse" && e.button > 2) return;
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
-        const at = pointOn(e.currentTarget, e);
+        const at = pointOn(e.currentTarget, e, fitNow.current);
         if (e.pointerType === "touch") {
           touch.current = { id: e.pointerId, ...at, lastX: at.x, lastY: at.y, moved: false };
           return;
@@ -905,7 +1060,7 @@ function Surface({
         send.current?.mouse({ type: "down", ...at, button: buttonOf(e.button), buttons: e.buttons, clicks: Math.min(3, Math.max(1, e.detail || 1)), mods: modsOf(e) });
       }}
       onPointerMove={(e) => {
-        const at = pointOn(e.currentTarget, e);
+        const at = pointOn(e.currentTarget, e, fitNow.current);
         const held = touch.current;
         if (e.pointerType === "touch") {
           if (!held || held.id !== e.pointerId) return;
@@ -928,7 +1083,7 @@ function Surface({
           if (held && held.id === e.pointerId && !held.moved) click({ x: held.x, y: held.y }, 0);
           return;
         }
-        send.current?.mouse({ type: "up", ...pointOn(e.currentTarget, e), button: buttonOf(e.button), buttons: e.buttons, clicks: Math.min(3, Math.max(1, e.detail || 1)), mods: modsOf(e) });
+        send.current?.mouse({ type: "up", ...pointOn(e.currentTarget, e, fitNow.current), button: buttonOf(e.button), buttons: e.buttons, clicks: Math.min(3, Math.max(1, e.detail || 1)), mods: modsOf(e) });
       }}
       onPointerCancel={() => {
         touch.current = null;
@@ -940,8 +1095,8 @@ function Surface({
           src={`data:image/jpeg;base64,${shown.jpeg}`}
           alt=""
           draggable={false}
-          className="pointer-events-none absolute left-0 top-0 max-w-none"
-          style={{ width: shown.width, height: shown.height }}
+          className="pointer-events-none absolute left-0 top-0 max-w-none origin-top-left"
+          style={{ width: shown.width, height: shown.height, transform: `translate(${fit.left}px, ${fit.top}px) scale(${fit.scale})` }}
         />
       ) : (
         <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -1044,9 +1199,15 @@ function ExtensionView({ view, onClose }: { view: ExtensionViewState; onClose: (
 }
 
 /** Where on the page, in its own pixels: the picture is drawn at them. */
-function pointOn(el: HTMLElement, e: { clientX: number; clientY: number }) {
+/** Where on the page a pointer is: inside the box, less where the page
+ * sits in it, back to the page's own scale when it is drawn smaller
+ * (a viewport larger than the box, src/lib/browserViewport.ts). */
+function pointOn(el: HTMLElement, e: { clientX: number; clientY: number }, fit = { left: 0, top: 0, scale: 1 }) {
   const box = el.getBoundingClientRect();
-  return { x: Math.max(0, Math.round(e.clientX - box.left)), y: Math.max(0, Math.round(e.clientY - box.top)) };
+  return {
+    x: Math.max(0, Math.round((e.clientX - box.left - fit.left) / fit.scale)),
+    y: Math.max(0, Math.round((e.clientY - box.top - fit.top) / fit.scale)),
+  };
 }
 
 const buttonOf = (button: number) => (button === 1 ? "middle" : button === 2 ? "right" : "left") as "left" | "middle" | "right";
@@ -1365,6 +1526,15 @@ function Thumb({ jpeg, onServer }: { jpeg: string | null; onServer: boolean }): 
  */
 export function MiniBrowser() {
   const state = useBrowserState();
+  const chosen = viewportOf(useViewport());
+  // A server's browser is told of a viewport chosen here while the panel,
+  // whose box usually says, is not on screen. The panel's own size it
+  // cannot know from here, so that one waits for the panel.
+  useEffect(() => {
+    if (browserHome() !== "server" || !chosen.size) return;
+    const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    void api("/api/browser/viewport", { method: "POST", body: JSON.stringify({ ...chosen.size, scale, mobile: Boolean(chosen.mobile) }) }).catch(() => {});
+  }, [chosen.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
   const [frame, setFrame] = useState<string | null>(null);
   useEffect(() => {
@@ -1397,7 +1567,9 @@ export function MiniBrowser() {
       src={`data:image/jpeg;base64,${frame}`}
       alt={active ? t("browserPanel.miniPage", { page: tabLabel(active) }) : t("browserPanel.thePageInTheBrowser")}
       draggable={false}
-      className="size-full select-none bg-background object-cover object-top"
+      // a chosen viewport whole, in the middle; the panel's own size from
+      // its top, filling the window
+      className={cn("size-full select-none bg-background", chosen.size ? "object-contain" : "object-cover object-top")}
     />
   );
 }

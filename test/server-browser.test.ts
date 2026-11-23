@@ -90,6 +90,9 @@ test("the person's input is checked and bounded before any of it reaches a page"
   assert.deepEqual(readViewport({ width: 900, height: 600, scale: 2 }, { relay: true }), { width: 900, height: 600, scale: 1 });
   assert.deepEqual(readViewport({ width: 9000, height: 9000, scale: 9 }), { width: 2560, height: 1600, scale: 2 });
   assert.equal(readViewport({ width: 100, height: 600 }), null);
+  // a phone's viewport chosen in the panel says so; anything else is not one
+  assert.deepEqual(readViewport({ width: 375, height: 812, scale: 2, mobile: true }), { width: 375, height: 812, scale: 2, mobile: true });
+  assert.equal(readViewport({ width: 375, height: 812, mobile: "yes" })?.mobile, undefined);
 });
 
 test("the person opens a page and watches it as pictures, laid out at their panel's size, and signed in as Chrome", async (t) => {

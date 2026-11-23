@@ -10,7 +10,7 @@ import {
   AppWindow,
   Eraser,
   Maximize2,
-  MoreVertical,
+  MoreHorizontal,
   PanelBottom,
   PanelFill,
   PanelLeft,
@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
+import { Tip } from "@/components/ui/tooltip";
 import {
   arrangeTerminal,
   moveTerminal,
@@ -72,13 +73,13 @@ export function HeaderButton({
   className?: string;
 }) {
   return (
+    <Tip label={label}>
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
       aria-pressed={pressed}
-      title={label}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-accent data-[state=open]:text-foreground",
         pressed && "bg-accent text-foreground",
@@ -87,6 +88,7 @@ export function HeaderButton({
     >
       {children}
     </button>
+    </Tip>
   );
 }
 
@@ -120,9 +122,11 @@ export function MoreMenu({
   const stay = (e: Event) => e.preventDefault();
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger className={TRIGGER} aria-label={t("terminalMenus.terminalOptions")} title={t("terminalMenus.terminalOptions")}>
-        <MoreVertical size={16} />
-      </DropdownMenuTrigger>
+      <Tip label={t("terminalMenus.terminalOptions")}>
+        <DropdownMenuTrigger className={TRIGGER} aria-label={t("terminalMenus.terminalOptions")}>
+          <MoreHorizontal size={16} />
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent
         align="end"
         className="min-w-[232px]"
@@ -277,7 +281,7 @@ export function LayoutMenu({
   const fill = layout.arrangement === "fill";
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger className={TRIGGER} aria-label={t("terminalMenus.terminalLayout")} title={t("terminalMenus.terminalLayout")}>
+      <DropdownMenuTrigger className={TRIGGER} aria-label={t("terminalMenus.terminalLayout")}>
         <Maximize2 size={15} />
       </DropdownMenuTrigger>
       <DropdownMenuContent

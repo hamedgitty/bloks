@@ -3014,7 +3014,7 @@ function placeTabs(held) {
       if (!win.contentView.children.includes(view)) win.contentView.addChildView(view);
       const shown = Boolean(held.bounds) && tabId === held.browser.state().activeTabId;
       if (shown) {
-        const { x, y, width, height } = held.bounds;
+        const { x, y, width, height } = emulateIn(view, held.bounds);
         view.setBounds({ x: Math.round(x * zoom), y: Math.round(y * zoom), width: Math.round(width * zoom), height: Math.round(height * zoom) });
       }
       view.setVisible(shown);
@@ -3044,7 +3044,44 @@ function boundsFrom(rect) {
   if (!rect || typeof rect !== "object") return null;
   const n = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(20_000, Number(v))) : NaN);
   const out = { x: n(rect.x), y: n(rect.y), width: n(rect.width), height: n(rect.height) };
-  return Object.values(out).some(Number.isNaN) || out.width < 40 || out.height < 40 ? null : out;
+  if (Object.values(out).some(Number.isNaN) || out.width < 40 || out.height < 40) return null;
+  // a viewport chosen in the panel: the size pages lay out at, within
+  // reason, and whether it is a phone's or a tablet's
+  const e = rect.emulate;
+  const ew = Math.round(Number(e?.width));
+  const eh = Math.round(Number(e?.height));
+  if (e && ew >= 200 && ew <= 2560 && eh >= 150 && eh <= 1600) out.emulate = { width: ew, height: eh, mobile: e.mobile === true };
+  return out;
+}
+
+/** A tab laid out at a chosen viewport and drawn scaled down to fit the
+ * panel's box, in its middle; or back at the box's own size. Remembered
+ * on the view, so nothing is asked of it again for the same size. */
+function emulateIn(view, bounds) {
+  const wc = view.webContents;
+  if (wc.isDestroyed()) return bounds;
+  const e = bounds.emulate;
+  const key = e ? `${e.width}x${e.height}:${e.mobile}:${Math.round(bounds.width)}x${Math.round(bounds.height)}` : "";
+  if (!e) {
+    if (view.emulated) wc.disableDeviceEmulation();
+    view.emulated = "";
+    return bounds;
+  }
+  const scale = Math.min(1, bounds.width / e.width, bounds.height / e.height);
+  const width = e.width * scale;
+  const height = e.height * scale;
+  if (view.emulated !== key) {
+    wc.enableDeviceEmulation({
+      screenPosition: e.mobile ? "mobile" : "desktop",
+      screenSize: { width: e.width, height: e.height },
+      viewPosition: { x: 0, y: 0 },
+      deviceScaleFactor: 0,
+      viewSize: { width: e.width, height: e.height },
+      scale,
+    });
+    view.emulated = key;
+  }
+  return { x: bounds.x + (bounds.width - width) / 2, y: bounds.y + (bounds.height - height) / 2, width, height };
 }
 
 /** Windows whose page is leaving: their tabs hide until the page that
@@ -3293,6 +3330,12 @@ handle("browser:do", async (event, action, arg) => {
       await held.ses.clearStorageData();
       await held.ses.clearCache();
       return { ok: true };
+    case "screenshot": {
+      // the page in front at its own full size, for the person to keep
+      if (!wc || wc.isDestroyed()) return { error: "There is no page to take a picture of." };
+      const image = await wc.capturePage();
+      return image.isEmpty() ? { error: "There is no picture of this page yet." } : { ok: true, png: image.toPNG().toString("base64") };
+    }
     default:
       return { error: "The browser does not do that." };
   }

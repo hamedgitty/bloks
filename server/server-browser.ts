@@ -185,6 +185,9 @@ export interface Viewport {
   /** Device pixels to a page pixel: 2 on a Mac's screen at home, 1
    * through Bloks Cloud, where every pixel crosses twice. */
   scale: number;
+  /** A phone's or a tablet's viewport, chosen in the panel: the page is
+   * told it is on one, as it would be there. */
+  mobile?: boolean;
 }
 
 const DEFAULT_VIEWPORT: Viewport = { width: 1280, height: 800, scale: 1 };
@@ -217,6 +220,7 @@ export function readViewport(body: unknown, { relay = false }: { relay?: boolean
     width: Math.min(2560, width),
     height: Math.min(1600, height),
     scale: relay ? 1 : Math.round(num(said.scale, 1, 2, 1) * 4) / 4,
+    ...(said.mobile === true ? { mobile: true } : {}),
   };
 }
 
@@ -1259,7 +1263,11 @@ export class ServerBrowser {
   /** The panel's size, which every tab lays out at. The last panel to
    * say wins: one person, one panel at a time, in practice. */
   async resize(viewport: Viewport): Promise<void> {
-    const same = viewport.width === this.viewport.width && viewport.height === this.viewport.height && viewport.scale === this.viewport.scale;
+    const same =
+      viewport.width === this.viewport.width &&
+      viewport.height === this.viewport.height &&
+      viewport.scale === this.viewport.scale &&
+      Boolean(viewport.mobile) === Boolean(this.viewport.mobile);
     this.viewport = viewport;
     if (same) return;
     await Promise.all([...this.byTarget.values()].map((tab) => this.send(tab, "Emulation.setDeviceMetricsOverride", metrics(viewport)).catch(() => {})));
@@ -1470,5 +1478,5 @@ function dispatchInput(call: (method: string, params: Record<string, unknown>) =
 }
 
 function metrics(viewport: Viewport) {
-  return { width: viewport.width, height: viewport.height, deviceScaleFactor: viewport.scale, mobile: false, screenWidth: viewport.width, screenHeight: viewport.height };
+  return { width: viewport.width, height: viewport.height, deviceScaleFactor: viewport.scale, mobile: Boolean(viewport.mobile), screenWidth: viewport.width, screenHeight: viewport.height };
 }

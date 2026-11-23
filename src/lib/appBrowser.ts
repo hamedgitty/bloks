@@ -123,7 +123,7 @@ export interface ScreenFrame {
 export type BrowserDo =
   | "navigate" | "newTab" | "closeTab" | "selectTab" | "back" | "forward" | "reload" | "stop"
   | "takeOver" | "giveBack" | "openExternal" | "openDownload" | "revealDownload" | "openDownloads"
-  | "clearDownloads" | "forgetSites" | "answerDialog";
+  | "clearDownloads" | "forgetSites" | "answerDialog" | "screenshot";
 
 // ── pure ───────────────────────────────────────────────────────────────
 

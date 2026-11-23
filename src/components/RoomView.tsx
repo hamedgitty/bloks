@@ -98,7 +98,8 @@ import { FilesPanel } from "./dock/FilesPanel";
 import { createPortal } from "react-dom";
 import { useTitlebarSlot } from "@/lib/titlebarSlot";
 import { DockHostContext, type DockHost } from "./dock/context";
-import { DockedBrowser, MiniBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
+import { DockedBrowser, MiniBrowser, MiniViewport, showPage, useBrowserState, useBrowserWhere, useMiniAspect } from "./browser/BrowserPanel";
+import { tabLabel } from "@/lib/appBrowser";
 import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
 import { browserStatus, pageOpen, strongest, teammateActive, TEAMMATE_MS, type DockStatus } from "@/lib/dockActivity";
 import { inThread, orderTopics, topicCounts, topicPowers, topicState, type RoomTopic, type TopicState } from "@/lib/roomTopics";
@@ -1086,6 +1087,8 @@ export function RoomView({ blok }: { blok: Blok }) {
   const browserWhere = useBrowserWhere();
   const [chatLinksIn] = useChatLinksIn();
   const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
+  const browserMiniAspect = useMiniAspect();
+  const pageInFront = browserState?.tabs.find((tab) => tab.id === browserState.activeTabId);
   const dockHost: DockHost = {
     openDoc: (doc) => dock.openDoc(dockKey, doc),
     // in the dock only where its browser can open the page and the person
@@ -1143,6 +1146,9 @@ export function RoomView({ blok }: { blok: Blok }) {
             render: (shown: boolean) => <DockedBrowser shown={shown} />,
             minimizable: pageOpen(browserState),
             mini: () => <MiniBrowser />,
+            miniActions: () => <MiniViewport />,
+            miniAspect: browserMiniAspect,
+            miniLabel: pageInFront ? tabLabel(pageInFront) || undefined : undefined,
           },
         ]
       : []),

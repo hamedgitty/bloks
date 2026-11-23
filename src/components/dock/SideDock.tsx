@@ -42,6 +42,7 @@ import { useFadeScroll } from "@/lib/fadeScroll";
 import { createPortal } from "react-dom";
 import { AppWindow, Collapse, DockBottom, DockLeft, DockRight, DockTop, Expand, Minimize, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
 import { setDockActions } from "@/lib/dockActions";
+import { Tip } from "@/components/ui/tooltip";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import {
   DropdownMenu,
@@ -127,6 +128,15 @@ export interface DockPane {
    * itself there would not do (the browser's page is the app's view, so a
    * picture of it). The panel itself otherwise. */
   mini?: () => ReactNode;
+  /** Its minimized window's own controls, before the way back and the X
+   * (the browser's viewport). */
+  miniActions?: () => ReactNode;
+  /** Its minimized window's shape, height over width (a phone's page is
+   * tall). The page's usual shape otherwise. */
+  miniAspect?: number;
+  /** What its minimized window is called, when not its name: the page in
+   * front, for the browser. */
+  miniLabel?: string;
   render: (shown: boolean) => ReactNode;
 }
 
@@ -347,7 +357,8 @@ export function SideDock({
 
   const plus = (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger aria-label={t("dock.add")} title={t("dock.add")} className={ROUND_BUTTON}>
+      <Tip label={t("dock.add")}>
+      <DropdownMenuTrigger aria-label={t("dock.add")} className={ROUND_BUTTON}>
         <Plus size={16} />
         {behind && (
           <span
@@ -357,6 +368,7 @@ export function SideDock({
           />
         )}
       </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="start" className="min-w-[240px]">
         {ordered.map((p) => (
           <DropdownMenuItem key={p.id} data-dock-kind={p.id} onSelect={() => add(p)}>
@@ -566,7 +578,6 @@ function ExpandControl({
     <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger
         aria-label={expanded ? t("dock.showConversation") : t("dock.expand")}
-        title={expanded ? t("dock.showConversation") : `${t("dock.expand")}  ${keys}`}
         onPointerEnter={rest}
         onPointerLeave={leave}
         // a click expands; only the keyboard and a rest open the menu

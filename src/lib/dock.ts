@@ -246,6 +246,28 @@ export function restoreTab(state: DockState, key: string, panel: DockPanel, now 
   return showPanel(state, key, panel, now);
 }
 
+/**
+ * A minimized panel's window closed: out of its corner and a tab again on
+ * its own side, kept for when the person opens the side panel, which is
+ * not opened for it. A pane open on its list shows it, a list being where
+ * there is nothing in front.
+ */
+export function dismissMini(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
+  const place = placeIn(state, key);
+  if (!minimizedIn(place).some((m) => m.panel === panel)) return state;
+  return withPlace(
+    state,
+    key,
+    (p) => {
+      const next = { ...unminimized(p, panel), tabs: withTab(p.tabs, panel) };
+      const side = sideOf(next, panel);
+      const pane = paneOf(next, side);
+      return pane.panel === null ? withPane(next, side, { open: pane.open, panel }) : next;
+    },
+    now,
+  );
+}
+
 /** A minimized panel dropped in another corner. */
 export function moveMini(state: DockState, key: string, panel: DockPanel, corner: DockCorner, now = Date.now()): DockState {
   const place = placeIn(state, key);
@@ -726,6 +748,7 @@ export const dock = {
   closeTab: (key: string, panel: DockPanel) => byPerson(key, closeTab(read(), key, panel)),
   minimize: (key: string, panel: DockPanel) => commit(minimizeTab(read(), key, panel)),
   restore: (key: string, panel: DockPanel) => byPerson(key, restoreTab(read(), key, panel), panel),
+  dismissMini: (key: string, panel: DockPanel) => commit(dismissMini(read(), key, panel)),
   moveMini: (key: string, panel: DockPanel, corner: DockCorner) => commit(moveMini(read(), key, panel, corner)),
   /** A tab moved to another side, by the person. */
   move: (key: string, panel: DockPanel, side: DockSide) => byPerson(key, moveTab(read(), key, panel, side), panel),

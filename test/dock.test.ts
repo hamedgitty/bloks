@@ -19,6 +19,7 @@ import {
   closeTab,
   sideForNew,
   minimizeTab,
+  dismissMini,
   restoreTab,
   moveMini,
   minimizedIn,
@@ -451,6 +452,23 @@ describe("panes on every side", () => {
     // showing a minimized panel by its key or the list puts it back too
     s = showPanel(s, a, "changes", 9);
     assert.deepEqual(minimizedIn(placeIn(s, a)), []);
+  });
+
+  test("a minimized window closed keeps its panel as a tab for the side panel, unopened", () => {
+    let s = minimizeTab(showPanel(showPanel(empty(), a, "changes", 1), a, "browser", 2), a, "browser", 3);
+    s = hideDock(s, a, 4);
+    s = dismissMini(s, a, "browser", 5);
+    let place = placeIn(s, a);
+    assert.deepEqual(minimizedIn(place), []);
+    assert.ok(place.tabs.includes("browser"), "a tab again");
+    assert.equal(place.open, false, "the side panel is not opened for it");
+    assert.equal(place.panel, "changes", "the tab that was in front stays in front");
+    // on a pane open on its list, it is what the list gives way to
+    s = minimizeTab(showPanel(empty(), a, "terminal", 6), a, "terminal", 7);
+    s = dismissMini(s, a, "terminal", 8);
+    place = placeIn(s, a);
+    assert.equal(place.open, true);
+    assert.equal(place.panel, "terminal");
   });
 
   test("a minimized panel is in view: an agent's work does not open it again, and it is kept", () => {

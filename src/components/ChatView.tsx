@@ -21,7 +21,7 @@ import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
 import { showTerminalTab, useTerminalTabs } from "./Terminal";
-import { act as browserAct, BrowsingOnMac, DockedBrowser, MiniBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
+import { act as browserAct, BrowsingOnMac, DockedBrowser, MiniBrowser, MiniViewport, showPage, useMiniAspect, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
 import { Activity, Bot as BotIcon, Eraser, FileDiff, Folder, Globe, Hourglass, PanelRight, Phone, Plus, Settings } from "@/components/icons";
 import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
 import { MiniDock } from "./dock/MiniDock";
@@ -854,6 +854,10 @@ export function ChatView({ bot }: { bot: Bot }) {
   const [chatLinksIn] = useChatLinksIn();
   const someoneBrowsing = browserState?.control.by === "agent";
   const browserHere = browserWhere.home === "own" || browserWhere.home === "server";
+  // the minimized browser's shape (the chosen viewport) and its name (the
+  // page in front)
+  const browserMiniAspect = useMiniAspect();
+  const pageInFront = browserState?.tabs.find((tab) => tab.id === browserState.activeTabId);
   const botNames = useMemo(() => Object.fromEntries(state.bots.map((b) => [b.id, b.name])), [state.bots]);
 
   // the two-agent exchange opened from one of its rows, if any
@@ -971,6 +975,9 @@ export function ChatView({ bot }: { bot: Bot }) {
             // minimized only with a page in it, as a picture of the page
             minimizable: pageOpen(browserState),
             mini: () => <MiniBrowser />,
+            miniActions: () => <MiniViewport />,
+            miniAspect: browserMiniAspect,
+            miniLabel: pageInFront ? tabLabel(pageInFront) || undefined : undefined,
           },
         ]
       : []),

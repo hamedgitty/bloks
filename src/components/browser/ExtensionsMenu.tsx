@@ -12,6 +12,7 @@ import { useRef, useState } from "react";
 import { Loader2, Puzzle, Settings } from "@/components/icons";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
+import { Tip } from "@/components/ui/tooltip";
 import { openableExtensions, type BrowserExtensionRow, type ExtensionPage, type ExtensionViewState } from "@/lib/browserExtensions";
 import { api, useStore } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -77,9 +78,11 @@ export function ExtensionsMenu({ source, onOpened }: { source: ExtensionSource; 
           .catch(() => setRows([]));
       }}
     >
-      <DropdownMenuTrigger ref={trigger} className={TRIGGER} aria-label={t("browserPanel.extensions")} title={t("browserPanel.extensions")}>
-        <Puzzle size={15} />
-      </DropdownMenuTrigger>
+      <Tip label={t("browserPanel.extensions")}>
+        <DropdownMenuTrigger ref={trigger} className={TRIGGER} aria-label={t("browserPanel.extensions")}>
+          <Puzzle size={15} />
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-[280px]" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DropdownMenuLabel>{t("browserPanel.extensions")}</DropdownMenuLabel>
         {rows === null ? (

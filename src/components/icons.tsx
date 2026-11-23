@@ -32,6 +32,7 @@ import ArrowUturnRightHero from "@heroicons/react/24/outline/ArrowUturnRightIcon
 import ArrowsPointingInHero from "@heroicons/react/24/outline/ArrowsPointingInIcon.js";
 import ArrowsPointingOutHero from "@heroicons/react/24/outline/ArrowsPointingOutIcon.js";
 import BackspaceHero from "@heroicons/react/24/outline/BackspaceIcon.js";
+import CameraHero from "@heroicons/react/24/outline/CameraIcon.js";
 import BeakerHero from "@heroicons/react/24/outline/BeakerIcon.js";
 import BellAlertHero from "@heroicons/react/24/outline/BellAlertIcon.js";
 import BellSlashHero from "@heroicons/react/24/outline/BellSlashIcon.js";
@@ -226,6 +227,46 @@ const DockLeftShape = sideShape("DockLeft", { x: 6, y: 6.75, width: 4.5, height:
 const DockRightShape = sideShape("DockRight", { x: 13.5, y: 6.75, width: 4.5, height: 10.5 });
 const DockTopShape = sideShape("DockTop", { x: 6, y: 6.75, width: 12, height: 3.75 });
 const DockBottomShape = sideShape("DockBottom", { x: 6, y: 13.5, width: 12, height: 3.75 });
+// The browser's viewports (src/lib/browserViewport.ts): the panel's own
+// size as four corners, then a phone, a tablet, a monitor and a laptop.
+const ViewportResponsiveShape = drawn(
+  "ViewportResponsive",
+  <>
+    <path d="M4.5 9V6.75A2.25 2.25 0 0 1 6.75 4.5H9" />
+    <path d="M15 4.5h2.25a2.25 2.25 0 0 1 2.25 2.25V9" />
+    <path d="M19.5 15v2.25a2.25 2.25 0 0 1-2.25 2.25H15" />
+    <path d="M9 19.5H6.75a2.25 2.25 0 0 1-2.25-2.25V15" />
+  </>,
+);
+const ViewportPhoneShape = drawn(
+  "ViewportPhone",
+  <>
+    <rect x="7.5" y="3" width="9" height="18" rx="2.25" />
+    <path d="M11 6h2" />
+  </>,
+);
+const ViewportTabletShape = drawn(
+  "ViewportTablet",
+  <>
+    <rect x="5.25" y="3" width="13.5" height="18" rx="2.25" />
+    <path d="M11 18h2" />
+  </>,
+);
+const ViewportMonitorShape = drawn(
+  "ViewportMonitor",
+  <>
+    <rect x="3.75" y="4.5" width="16.5" height="11.25" rx="2" />
+    <path d="M9.75 19.5h4.5" />
+    <path d="M12 15.75v3.75" />
+  </>,
+);
+const ViewportLaptopShape = drawn(
+  "ViewportLaptop",
+  <>
+    <rect x="5.25" y="5.25" width="13.5" height="10.5" rx="1.75" />
+    <path d="M3 18.75h18" />
+  </>,
+);
 const PanelBottomShape = drawn(
   "PanelBottom",
   <>
@@ -315,6 +356,7 @@ export const Bot = icon(CpuChipHero, "Bot");
 export const Brain = icon(LightBulbHero, "Brain");
 export const Briefcase = icon(BriefcaseHero, "Briefcase");
 export const CalendarClock = icon(CalendarDaysHero, "CalendarClock");
+export const Camera = icon(CameraHero, "Camera");
 export const Check = icon(CheckHero, "Check");
 export const ChevronDown = icon(ChevronDownHero, "ChevronDown");
 export const ChevronLeft = icon(ChevronLeftHero, "ChevronLeft");
@@ -387,6 +429,11 @@ export const PanelSplit = PanelSplitShape;
 export const PanelTop = PanelTopShape;
 export const PanelLeft = PanelLeftShape;
 export const Expand = ExpandShape;
+export const ViewportResponsive = ViewportResponsiveShape;
+export const ViewportPhone = ViewportPhoneShape;
+export const ViewportTablet = ViewportTabletShape;
+export const ViewportMonitor = ViewportMonitorShape;
+export const ViewportLaptop = ViewportLaptopShape;
 export const Collapse = CollapseShape;
 export const Minimize = MinimizeShape;
 export const DockLeft = DockLeftShape;

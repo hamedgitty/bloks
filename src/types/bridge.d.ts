@@ -419,8 +419,12 @@ declare global {
        * tab hides), what the person does in it, and the app asking for
        * the panel when an agent starts browsing. Absent in an older app. */
       browserState?(): Promise<import("../lib/appBrowser").AppBrowserState | null>;
-      browserBounds?(rect: { x: number; y: number; width: number; height: number } | null): Promise<import("../lib/appBrowser").AppBrowserState | null>;
-      browserDo?(action: import("../lib/appBrowser").BrowserDo, arg?: string | import("../lib/appBrowser").DialogAnswer): Promise<{ ok?: boolean; error?: string; url?: string }>;
+      /** Where the page goes, and the viewport it lays out at when one is
+       * chosen (fitted into the box by the app). */
+      browserBounds?(
+        rect: { x: number; y: number; width: number; height: number; emulate?: { width: number; height: number; mobile: boolean } } | null,
+      ): Promise<import("../lib/appBrowser").AppBrowserState | null>;
+      browserDo?(action: import("../lib/appBrowser").BrowserDo, arg?: string | import("../lib/appBrowser").DialogAnswer): Promise<{ ok?: boolean; error?: string; url?: string; png?: string }>;
       onBrowserState?(handler: (state: import("../lib/appBrowser").AppBrowserState) => void): () => void;
       onBrowserReveal?(handler: (payload: { by?: string }) => void): () => void;
       /** Chrome extensions in this workspace's browser session (GitHub 510,
