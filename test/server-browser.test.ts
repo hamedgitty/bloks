@@ -118,14 +118,20 @@ test("the person opens a page and watches it as pictures, laid out at their pane
   assert.equal(Buffer.from(first.frame!.jpeg, "base64").toString(), "frame 1 of https://docs.example");
   assert.equal(first.frame!.width, 700);
   assert.deepEqual(tab.cast, { format: "jpeg", quality: 60, maxWidth: 1400, maxHeight: 1000, everyNthFrame: 1 });
+  // on a sharp screen Chrome's picture is followed by a screenshot, which
+  // keeps the scale, laid out at the same size
+  const sharpened = await w.browser.screen(first.frame!.seq, { waitMs: 2_000 });
+  assert.equal(Buffer.from(sharpened.frame!.jpeg, "base64").toString(), "shot of https://docs.example");
+  assert.equal(sharpened.frame!.width, 700);
   // nothing new: the wait ends empty-handed
-  const none = await w.browser.screen(first.frame!.seq, { waitMs: 50 });
+  const none = await w.browser.screen(sharpened.frame!.seq, { waitMs: 50 });
   assert.equal(none.frame, null);
-  // the page changes: the waiting look gets it at once
-  const waiting = w.browser.screen(first.frame!.seq, { waitMs: 2_000 });
+  // the page changes: the waiting look gets it, sharp, at once
+  const waiting = w.browser.screen(sharpened.frame!.seq, { waitMs: 2_000 });
   w.fake().repaint(tab.targetId);
   const second = await waiting;
-  assert.equal(second.frame!.seq, first.frame!.seq + 1);
+  assert.equal(second.frame!.seq, sharpened.frame!.seq + 1);
+  assert.equal(Buffer.from(second.frame!.jpeg, "base64").toString(), "shot of https://docs.example");
   // a panel from before a restart asks after a number this one never had
   assert.ok((await w.browser.screen(10_000, { waitMs: 50 })).frame, "it is shown the latest picture");
 

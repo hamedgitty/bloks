@@ -317,9 +317,9 @@ const GUARDED = [
 const WATCH_LEASE_MS = 15_000;
 /** The fewest milliseconds between two pictures: ten a second at most. */
 const FRAME_GAP_MS = 100;
-/** How long a page shows no change before its picture is taken again at
- * the panel's own sharpness (pictured, below). */
-const SHARPEN_MS = 250;
+/** On a sharp screen, how often a page that keeps changing is pictured
+ * again at the screen's sharpness (pictured, below). */
+const SHARPEN_MS = 140;
 /** A browser with no tabs left is closed after this, to give the server
  * its memory back; its sign-ins stay in the profile for next time. */
 const IDLE_CLOSE_MS = 10 * 60_000;
@@ -409,6 +409,12 @@ export class ServerBrowser {
   private watchedUntil = 0;
   private castTimer: ReturnType<typeof setInterval> | null = null;
   private sharpTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A sharp picture being taken, the page changed since it began, and
+   * when the last one was taken and of which tab. */
+  private sharpening = false;
+  private sharpDirty = false;
+  private sharpAt = 0;
+  private sharpTab: string | null = null;
   private stateTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly downloads = new Map<string, { name: string; by?: string; at: number }>();
@@ -1270,6 +1276,9 @@ export class ServerBrowser {
       Boolean(viewport.mobile) === Boolean(this.viewport.mobile);
     this.viewport = viewport;
     if (same) return;
+    // a picture at the old size is not this one: Chrome's are shown again
+    // until a sharp one at the new size is there
+    this.sharpTab = null;
     await Promise.all([...this.byTarget.values()].map((tab) => this.send(tab, "Emulation.setDeviceMetricsOverride", metrics(viewport)).catch(() => {})));
     await this.cast();
   }
@@ -1362,30 +1371,49 @@ export class ServerBrowser {
     // answer is what paces them
     const ack = () => void line.send("Page.screencastFrameAck", { sessionId: params.sessionId }, 5_000, tab.sessionId ?? undefined).catch(() => {});
     if (tab !== this.castTab || typeof params.data !== "string") return ack();
-    this.frame = {
-      seq: ++this.frameSeq,
-      jpeg: params.data,
-      width: Math.round(Number(params.metadata?.deviceWidth) || this.viewport.width),
-      height: Math.round(Number(params.metadata?.deviceHeight) || this.viewport.height),
-      tab: tab.id,
-      at: Date.now(),
-    };
-    this.wakeWatchers();
     setTimeout(ack, FRAME_GAP_MS).unref?.();
     // Chrome's moving pictures come at the page's own size whatever its
-    // scale, which on a sharp screen reads as blurred. Once the page holds
-    // still a moment, it is taken again as a screenshot, which keeps the
-    // scale: moving it stays quick, reading it is sharp.
-    if (this.viewport.scale > 1) {
-      if (this.sharpTimer) clearTimeout(this.sharpTimer);
-      this.sharpTimer = setTimeout(() => {
-        this.sharpTimer = null;
-        void this.still(tab);
-      }, SHARPEN_MS);
-      this.sharpTimer.unref?.();
+    // scale, which on a sharp screen reads as blurred. There each change is
+    // pictured again as a screenshot, which keeps the scale, a few times a
+    // second while the page keeps changing; Chrome's own picture is shown
+    // only until the first sharp one of this tab is there.
+    const sharp = this.viewport.scale > 1;
+    if (!sharp || this.sharpTab !== tab.id) {
+      this.frame = {
+        seq: ++this.frameSeq,
+        jpeg: params.data,
+        width: Math.round(Number(params.metadata?.deviceWidth) || this.viewport.width),
+        height: Math.round(Number(params.metadata?.deviceHeight) || this.viewport.height),
+        tab: tab.id,
+        at: Date.now(),
+      };
+      this.wakeWatchers();
     }
+    if (sharp) this.sharpen(tab);
     // a page that changes says so in pictures, and maybe in its title
     if (Date.now() - tab.lookedAt > 2_000) void this.history(tab);
+  }
+
+  /** A sharp picture of a changing tab: one at a time, at most every
+   * SHARPEN_MS, and one more after it when the page changed meanwhile. */
+  private sharpen(tab: PageTab) {
+    if (this.sharpening) {
+      this.sharpDirty = true;
+      return;
+    }
+    if (this.sharpTimer) return;
+    const wait = Math.max(0, SHARPEN_MS - (Date.now() - this.sharpAt));
+    this.sharpTimer = setTimeout(() => {
+      this.sharpTimer = null;
+      this.sharpening = true;
+      this.sharpDirty = false;
+      void this.still(tab).finally(() => {
+        this.sharpening = false;
+        this.sharpAt = Date.now();
+        if (this.sharpDirty && this.castTab === tab) this.sharpen(tab);
+      });
+    }, wait);
+    this.sharpTimer.unref?.();
   }
 
   /** One picture of a tab as it stands, taken rather than sent. */
@@ -1394,6 +1422,7 @@ export class ServerBrowser {
     const shot = await tab.cdp("Page.captureScreenshot", { format: "jpeg", quality: 80 }).catch(() => null);
     if (typeof shot?.data !== "string" || this.castTab !== tab) return;
     this.frame = { seq: ++this.frameSeq, jpeg: shot.data, width: this.viewport.width, height: this.viewport.height, tab: tab.id, at: Date.now() };
+    if (this.viewport.scale > 1) this.sharpTab = tab.id;
     this.wakeWatchers();
   }
 
