@@ -757,8 +757,9 @@ any runs through `agy acp` instead, which can: the agent gets exactly
 the apps and servers its settings grant, their keys and headers never
 on a command line, and anything agy would ask about comes to you as an
 approval card, answered by the agent's approval mode like any other. A
-server agy cannot reach stops the turn and says why. Turns without
-apps or servers run as before.
+server agy cannot reach stops the turn and says why; agy 1.5.14 takes
+stdio servers there but not HTTP ones, so an attached HTTP server is
+one of those. Turns without apps or servers run as before.
 
 An MCP server you add as a command is looked for on this computer, never
 run to check it. If the program is not there, Settings, Plugins says
