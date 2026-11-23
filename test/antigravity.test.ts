@@ -7,9 +7,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import type { RuntimeEvent, SendTurnInput } from "../server/contracts.ts";
-import { ACP_SPECS, acpDriver } from "../server/drivers/acp.ts";
+import { ACP_SPECS, acpDriver, permissionInput } from "../server/drivers/acp.ts";
 import { SHUTDOWN_GRACE_MS } from "../server/drivers/engine-processes.ts";
 import { OWN_GROUP } from "../server/no-console.ts";
+import { targetOf } from "../server/policy.ts";
+import { dangerous } from "../server/safety-floor.ts";
 import { engineResults } from "../server/run-export.ts";
 import { signedInThere } from "../server/workplace.ts";
 
@@ -57,6 +59,7 @@ interface FakeAgyOptions {
   version?: string;
   onPrompt?: string;
   onResume?: string;
+  onCancel?: string;
   models?: Array<{ value: string; name: string; efforts?: string[] }>;
   fullAuto?: boolean;
   probeModels?: boolean;
@@ -111,6 +114,11 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     const p = pendingClient.get(msg.id);
     pendingClient.delete(msg.id);
     if (msg.error) p.reject(msg.error); else p.resolve(msg.result);
+    return;
+  }
+  if (msg.id === undefined && msg.method === "session/cancel") {
+    appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method: msg.method, params: msg.params }) + "\\n");
+    ${opts.onCancel ?? ""}
     return;
   }
   if (msg.id === undefined || !msg.method) return;
@@ -477,4 +485,69 @@ test("minVersion rejects agy < 1.5.13, accepts 1.5.13+, keeps remote sign-in unk
   assert.equal(remoteAuth, null);
 
   assert.equal(engineResults("antigravity"), "partial");
+});
+
+test("permissionInput normalizes PascalCase Antigravity rawInput fields for policy and safety floor", () => {
+  const cmdInput = permissionInput({
+    kind: "execute",
+    title: "rm -rf /",
+    rawInput: { CommandLine: "rm -rf /", WaitMsBeforeAsync: 5000 },
+  });
+  assert.equal(cmdInput.command, "rm -rf /");
+  const cmdTarget = targetOf("execute", cmdInput, { botId: "b1", agent: "agy" });
+  assert.equal(cmdTarget.command, "rm -rf /");
+  assert.ok(dangerous(cmdTarget), "safety floor must catch dangerous CommandLine");
+
+  const fileInput = permissionInput({
+    kind: "edit",
+    rawInput: { Path: "/work/secret.env", Content: "x" },
+  });
+  assert.equal(fileInput.path, "/work/secret.env");
+  assert.equal(targetOf("edit", fileInput, { botId: "b1", agent: "agy" }).path, "/work/secret.env");
+
+  // Empty canonical key must not mask a non-empty PascalCase alias
+  const masked = permissionInput({ rawInput: { command: "  ", CommandLine: "echo hi" } });
+  assert.equal(masked.command, "echo hi");
+});
+
+test("Stop gives agy time to handle session/cancel so detached tool helpers are cleaned up before SIGTERM", { skip: !OWN_GROUP }, async (t) => {
+  const agy = await createFakeAgy({
+    onPrompt: `
+      const { spawn } = await import("node:child_process");
+      const helper = spawn(process.execPath, ["-e", "process.stdout.write('ready'); setInterval(() => {}, 60_000)"], {
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      await new Promise((r) => helper.stdout.once("data", r));
+      globalThis.__detachedHelper = helper;
+      globalThis.__cancelReply = () => reply({ stopReason: "cancelled" });
+      writeFileSync("pids", JSON.stringify([process.pid, helper.pid]));
+      update({ sessionUpdate: "tool_call", toolCallId: "tc-pty", kind: "execute", title: "sleep 60" });
+      await new Promise(() => {});
+    `,
+    onCancel: `
+      if (globalThis.__detachedHelper) {
+        try { process.kill(-globalThis.__detachedHelper.pid, "SIGKILL"); } catch {}
+        try { globalThis.__detachedHelper.kill("SIGKILL"); } catch {}
+      }
+      setTimeout(() => globalThis.__cancelReply?.(), 60);
+    `,
+  });
+  let pids: number[] = [];
+  t.after(async () => {
+    await agy.instance.dispose();
+    for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+  });
+  await agy.send({ stallMs: 0 });
+  await until(() => agy.events.some((e) => e.type === "item.started"), "tool never started");
+  pids = JSON.parse(readFileSync(join(agy.dir, "pids"), "utf8"));
+  const [leader, helper] = pids;
+  assert.ok(running(helper), "detached helper should be running before Stop");
+  await agy.instance.adapter.interruptTurn("t1");
+  await within(agy.completed);
+  assert.equal(running(leader), false, "agy leader outlived Stop");
+  assert.equal(running(helper), false, "detached helper outlived Stop");
+  assert.ok(agy.requests().some((r) => r.method === "session/cancel"));
+  const end = agy.events.at(-1);
+  assert.equal(end?.type === "turn.completed" && end.stopReason, "interrupted");
 });

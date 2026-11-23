@@ -255,6 +255,21 @@ function writesOf(update: any): string[] {
 
 const RULE_FIELDS = ["command", "cmd", "script", "file_path", "path", "filePath", "notebook_path", "target_file", "url", "uri"];
 
+/** PascalCase / camelCase aliases some ACP agents (e.g. Antigravity) send in
+ * rawInput, mapped to the canonical fields `policy.ts` (`targetOf`) reads. */
+const RULE_FIELD_ALIASES: ReadonlyArray<readonly [alias: string, canonical: string]> = [
+  ["CommandLine", "command"],
+  ["commandLine", "command"],
+  ["Command", "command"],
+  ["Path", "path"],
+  ["FilePath", "filePath"],
+  ["TargetFile", "target_file"],
+  ["AbsolutePath", "path"],
+  ["DirectoryPath", "path"],
+  ["Url", "url"],
+  ["Uri", "uri"],
+];
+
 /**
  * What a permission request is about, in the fields the rules read: the
  * call's own input (where a command usually is), and every file it names
@@ -268,11 +283,20 @@ export function permissionInput(call: any): Record<string, unknown> {
   // command could be walked past by padding the front of it.
   const raw: Record<string, unknown> = {};
   const given = call?.rawInput && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) ? call.rawInput : {};
-  for (const key of RULE_FIELDS) {
-    const value = given[key];
-    if (typeof value === "string") raw[key] = value;
+  const readValue = (value: unknown): string | undefined => {
+    if (typeof value === "string") return value;
     // a command can come as its argv, the way Codex's legacy one does
-    else if (Array.isArray(value) && value.every((part) => typeof part === "string")) raw[key] = value.join(" ");
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) return value.join(" ");
+    return undefined;
+  };
+  for (const key of RULE_FIELDS) {
+    const value = readValue(given[key]);
+    if (value !== undefined) raw[key] = value;
+  }
+  for (const [alias, canonical] of RULE_FIELD_ALIASES) {
+    if (typeof raw[canonical] === "string" && raw[canonical].trim()) continue;
+    const value = readValue(given[alias]);
+    if (value !== undefined) raw[canonical] = value;
   }
   const paths = [
     ...(Array.isArray(call?.locations) ? call.locations.map((l: any) => l?.path) : []),
@@ -1004,13 +1028,39 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // ends there and then. A compaction is a prompt of its own, and is
         // cancelled like one.
         const cancellingSession = () => sessionId ?? (state.compacting && session?.sessionId ? String(session.sessionId) : null);
+        let settleStarted: (() => void) | null = null;
+        const settledSignal = new Promise<void>((resolve) => {
+          settleStarted = resolve;
+        });
+        let interruptDone: Promise<void> | null = null;
         const interrupt = async () => {
           if (state.settled) return settleDone;
+          if (interruptDone) return interruptDone;
           state.stopping = true;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn was stopped", "turn-ended");
           const cancelling = cancellingSession();
           if (cancelling && !exited) rpc.notify("session/cancel", { sessionId: cancelling });
-          if (owner) return settle(false, "interrupted");
+          if (owner) {
+            interruptDone = (async () => {
+              // Give the agent a brief window to handle session/cancel (for
+              // instance to terminate PTY-detached tool subprocesses outside
+              // its own process group) before escalating to group cleanup.
+              if (cancelling && !exited && (state.live || state.compacting)) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                  settledSignal,
+                  gone,
+                  new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, 2_000);
+                    timer.unref?.();
+                  }),
+                ]);
+                clearTimeout(timer);
+              }
+              return settle(false, "interrupted");
+            })();
+            return interruptDone;
+          }
           if (exited) return;
           if (!state.live && !state.compacting) {
             settle(false, "interrupted");
@@ -1078,6 +1128,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const settle = (ok: boolean, stopReason: string | null, graceful = false): Promise<void> => {
           if (state.settled) return settleDone;
           state.settled = true;
+          settleStarted?.();
           if (watch) clearInterval(watch);
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn ended", "turn-ended");
           rpc.failPending(new Error("turn settled"));
@@ -1254,8 +1305,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           }
           // session/load replays history as the same notifications a live
           // turn uses. Until we have sent session/prompt, none of it is
-          // this turn's output.
-          if (!state.live) return;
+          // this turn's output. Once stopping, drop late stream chunks too.
+          if (!state.live || state.stopping) return;
           switch (update.sessionUpdate) {
             case "agent_message_chunk": {
               const text = update.content?.type === "text" ? String(update.content.text ?? "") : "";
