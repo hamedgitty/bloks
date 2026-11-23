@@ -6,8 +6,10 @@
 // A window shows its panel as it is (a terminal goes on working in it),
 // or, where the panel cannot be drawn small (the browser's page is the
 // app's own view), a picture of it kept fresh (DockPane.mini). Resting the
-// pointer on it brings up a quiet header: its name, a handle to drag it
-// by, and on the right the way back into the side panel.
+// pointer on it brings up a quiet header on top of it, the window growing
+// by the header rather than the header covering any of it: its name, a
+// handle to drag it by, and on the right the way back into the side
+// panel. Every window keeps a header's room above it for that.
 //
 // Dragged, it follows the pointer and, let go, springs to the nearest
 // corner, carrying the speed it was let go at, so a flick toward a corner
@@ -20,8 +22,10 @@ import { dock, minimizedIn, placeIn, useDockState, type DockCorner } from "@/lib
 import { t } from "@/lib/i18n";
 import type { DockPane } from "./SideDock";
 
-/** Space between two windows in one corner. */
+/** Space between two windows in one corner, besides the header's room. */
 const GAP = 10;
+/** The header that comes up on top of a window on hover. */
+const HEADER = 32;
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
 /** How small a live panel is drawn in its window. */
 const LIVE_SCALE = 0.6;
@@ -44,9 +48,12 @@ export function MiniDock({ placeKey, panes }: { placeKey: string; panes: readonl
   // shape
   const w = Math.round(Math.min(360, Math.max(220, room.w * 0.36)));
   const h = Math.round(w * 0.62);
+  // each window has a header's room above it, so the header never covers
+  // the one above or falls off the top
+  const step = h + HEADER + GAP;
   const slot = (corner: DockCorner, i: number) => ({
     x: corner.endsWith("left") ? 0 : Math.max(0, room.w - w),
-    y: corner.startsWith("top") ? i * (h + GAP) : Math.max(0, room.h - h - i * (h + GAP)),
+    y: corner.startsWith("top") ? HEADER + i * step : Math.max(HEADER, room.h - h - i * step),
   });
   return (
     <div ref={box} className="pointer-events-none absolute inset-3 z-20">
@@ -146,15 +153,14 @@ function MiniWindow({
       dragListener={byBody}
       dragMomentum={false}
       dragElastic={0.12}
-      dragConstraints={{ left: 0, top: 0, right: Math.max(0, room.w - size.w), bottom: Math.max(0, room.h - size.h) }}
+      dragConstraints={{ left: 0, top: HEADER, right: Math.max(0, room.w - size.w), bottom: Math.max(HEADER, room.h - size.h) }}
       whileDrag={reduced ? undefined : { scale: 1.02 }}
       onDragStart={() => (dragging.current = true)}
       onDragEnd={(_, info) => land(info)}
-      className={cn(
-        "group pointer-events-auto absolute left-0 top-0 overflow-hidden rounded-xl border bg-card shadow-lg shadow-(color:--shadow-color)",
-        byBody && "cursor-grab active:cursor-grabbing",
-      )}
+      className={cn("group pointer-events-auto absolute left-0 top-0", byBody && "cursor-grab active:cursor-grabbing")}
     >
+      {/* the face: the panel or its picture, never covered */}
+      <div className="absolute inset-0 overflow-hidden rounded-xl border bg-card shadow-lg shadow-(color:--shadow-color) transition-[border-radius] duration-150 ease-out group-hover:rounded-t-none group-focus-within:rounded-t-none">
       {pane.mini ? (
         <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">{pane.mini()}</div>
       ) : (
@@ -167,9 +173,12 @@ function MiniWindow({
           {pane.render(true)}
         </div>
       )}
+      </div>
+      {/* the header, on top of the face: the window grows by it on hover */}
       <div
         onPointerDown={(e) => controls.start(e)}
-        className="absolute inset-x-0 top-0 z-10 flex h-8 cursor-grab items-center gap-1.5 border-b bg-card px-1.5 opacity-0 transition-opacity duration-150 ease-out active:cursor-grabbing group-hover:opacity-100 group-focus-within:opacity-100"
+        style={{ height: HEADER }}
+        className="absolute inset-x-0 bottom-full z-10 flex translate-y-1 cursor-grab items-center gap-1.5 rounded-t-xl border border-b-0 bg-card px-1.5 opacity-0 transition-[opacity,translate] duration-150 ease-out pointer-events-none active:cursor-grabbing group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 group-focus-within:opacity-100"
       >
         <button
           type="button"
