@@ -40,7 +40,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useFadeScroll } from "@/lib/fadeScroll";
 import { createPortal } from "react-dom";
-import { AppWindow, Maximize2, Minimize2, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
+import { AppWindow, Collapse, DockBottom, DockLeft, DockRight, DockTop, Expand, Minimize, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
+import { setDockActions } from "@/lib/dockActions";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import {
   DropdownMenu,
@@ -60,6 +61,8 @@ import {
   DOCK_SIDE_BY_SIDE,
   paneOf,
   placeIn,
+  canMinimize,
+  minimizedIn,
   sideForNew,
   sideOf,
   tabsOn,
@@ -117,6 +120,13 @@ export interface DockPane {
   onAdd?: () => void;
   /** Opens it in a window of its own (the desktop app only). */
   popOut?: () => void;
+  /** Whether it can be minimized now: the browser only with a page in it.
+   * Any panel can, otherwise. */
+  minimizable?: boolean;
+  /** What its small window shows when minimized, where drawing the panel
+   * itself there would not do (the browser's page is the app's view, so a
+   * picture of it). The panel itself otherwise. */
+  mini?: () => ReactNode;
   render: (shown: boolean) => ReactNode;
 }
 
@@ -195,8 +205,11 @@ export function SideDock({
   // the right pane shows while open, on its list when no tab is in front;
   // another side's only with a tab in it
   const visible = side === "right" ? pane.open : Boolean(shown);
-  // the tab whose own menu is open, by its key in the strip
-  const [menuFor, setMenuFor] = useState<string | null>(null);
+  // the panels minimized here are drawn in their small windows instead
+  // (MiniDock.tsx)
+  const minimized = new Set(minimizedIn(place).map((m) => m.panel));
+  // where the panel in front puts its own buttons (src/lib/dockActions.ts)
+  const [actionSlot, setActionSlot] = useState<HTMLSpanElement | null>(null);
   const [room, setRoom] = useState(0);
   const [dragging, setDragging] = useState<number | null>(null);
   const [holder, setHolder] = useState<HTMLElement | null>(null);
@@ -275,6 +288,12 @@ export function SideDock({
     headSlot.style.width = up ? `${size + 6}px` : "0px";
   }, [headSlot, up, size]);
 
+  useLayoutEffect(() => {
+    if (!shown) return;
+    setDockActions(shown, actionSlot);
+    return () => setDockActions(shown, null);
+  }, [shown, actionSlot]);
+
   const tab = (key: string, p: DockPane, label: string, icon: ReactNode, isFront: boolean, onSelect: () => void, onClose: () => void, title?: string) => {
     const status = p.status && !(p.status === "working" && isFront) ? STATUS[p.status] : null;
     const said = status ? t("dock.status.labelled", { panel: label, status: t(status.words) }) : label;
@@ -282,46 +301,7 @@ export function SideDock({
       <div
         key={key}
         className="group relative flex shrink-0 items-center"
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenuFor(key);
-        }}
       >
-        <DropdownMenu modal={false} open={menuFor === key} onOpenChange={(open) => !open && setMenuFor(null)}>
-          <DropdownMenuTrigger asChild>
-            <span aria-hidden tabIndex={-1} className="pointer-events-none absolute inset-0" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[220px]">
-            {canMove && (
-              <>
-                <DropdownMenuLabel>{t("dock.moveTo")}</DropdownMenuLabel>
-                {(["left", "right", "top", "bottom"] as const).map((to) => (
-                  <DropdownMenuItem key={to} data-dock-move={to} disabled={to === side} onSelect={() => dock.move(placeKey, p.id, to)}>
-                    {SIDE_ICON[to]}
-                    <span className="flex-1">{t(SIDE_WORDS[to])}</span>
-                  </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator />
-              </>
-            )}
-            <DropdownMenuItem onSelect={() => setExpanded(!expanded)}>
-              {expanded ? <Minimize2 /> : <Maximize2 />}
-              <span className="flex-1">{expanded ? t("dock.restore") : t("dock.expand")}</span>
-              <kbd className="font-sans text-caption text-muted-foreground">{keysFor("dockExpand", platformOf())[0]}</kbd>
-            </DropdownMenuItem>
-            {p.popOut && (
-              <DropdownMenuItem onSelect={() => p.popOut?.()}>
-                <AppWindow />
-                <span className="flex-1">{t("dock.newWindow")}</span>
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onClose}>
-              <X />
-              <span className="flex-1">{t("dock.closeTab", { name: label })}</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
         <button
           type="button"
           role="tab"
@@ -425,10 +405,30 @@ export function SideDock({
       {/* right after the last tab, and first when there is none */}
       {plus}
       <span className="flex-1" />
-      {expanded && (
-        <HeaderButton label={t("dock.restore")} pressed onClick={() => setExpanded(false)}>
-          <Minimize2 size={15} />
+      {/* the panel in front's own buttons, then minimize, expand (and its
+          menu on hover) and the pane's own icon, which hides it */}
+      <span ref={setActionSlot} className="flex shrink-0 items-center gap-1 empty:hidden" />
+      {front && (
+        <HeaderButton
+          label={canMinimize(place, front.id) ? t("dock.minimize") : t("dock.minimizeFull")}
+          disabled={front.minimizable === false || !canMinimize(place, front.id)}
+          onClick={() => {
+            setExpanded(false);
+            dock.minimize(placeKey, front.id);
+          }}
+        >
+          <Minimize size={16} />
         </HeaderButton>
+      )}
+      {front && (
+        <ExpandControl
+          expanded={expanded}
+          onToggle={() => setExpanded(!expanded)}
+          side={side}
+          canMove={canMove}
+          onMove={(to) => dock.move(placeKey, front.id, to)}
+          popOut={front.popOut}
+        />
       )}
       <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey, side)}>
         {SIDE_ICON[side]}
@@ -468,7 +468,7 @@ export function SideDock({
       </div>
     </div>
   );
-  const drawn = ordered.filter((p) => p.id === shown || (p.keepAlive && kept.has(p.id) && sideOf(place, p.id) === side));
+  const drawn = ordered.filter((p) => !minimized.has(p.id) && (p.id === shown || (p.keepAlive && kept.has(p.id) && sideOf(place, p.id) === side)));
   const edge = visible && !covering && (
     <Edge
       side={side}
@@ -513,6 +513,109 @@ export function SideDock({
       </aside>
       {(side === "left" || side === "top") && edge}
     </>
+  );
+}
+
+const MOVE_ICON: Record<DockSide, ReactNode> = {
+  left: <DockLeft size={18} />,
+  right: <DockRight size={18} />,
+  top: <DockTop size={18} />,
+  bottom: <DockBottom size={18} />,
+};
+
+/**
+ * Expand, at the pane's top right. A click expands the pane over the
+ * conversation, and once it has, the button says Show conversation and
+ * puts it back. Resting the pointer on it opens its menu: the four sides
+ * the tab can move to, Expand with its key, and a window of its own. The
+ * keyboard opens the menu, whose Expand does the same.
+ */
+function ExpandControl({
+  expanded,
+  onToggle,
+  side,
+  canMove,
+  onMove,
+  popOut,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+  side: DockSide;
+  canMove: boolean;
+  onMove: (to: DockSide) => void;
+  popOut?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  // a short rest before it opens, so passing over it opens nothing; a
+  // moment's grace on the way out, so the pointer can cross to the menu
+  const rest = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOpen(true), open ? 0 : 350);
+  };
+  const leave = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOpen(false), 180);
+  };
+  const keys = keysFor("dockExpand", platformOf())[0];
+  return (
+    <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger
+        aria-label={expanded ? t("dock.showConversation") : t("dock.expand")}
+        title={expanded ? t("dock.showConversation") : `${t("dock.expand")}  ${keys}`}
+        onPointerEnter={rest}
+        onPointerLeave={leave}
+        // a click expands; only the keyboard and a rest open the menu
+        onPointerDown={(e) => e.pointerType !== "touch" && e.button === 0 && e.preventDefault()}
+        onClick={() => {
+          clearTimeout(timer.current);
+          setOpen(false);
+          onToggle();
+        }}
+        className={cn(ROUND_BUTTON, expanded && "w-auto gap-1.5 px-2 text-small text-foreground")}
+      >
+        {expanded ? <Collapse size={15} /> : <Expand size={15} />}
+        {expanded && <span className="whitespace-nowrap">{t("dock.showConversation")}</span>}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[220px]" onPointerEnter={rest} onPointerLeave={leave}>
+        {canMove && (
+          <>
+            <DropdownMenuLabel>{t("dock.moveTo")}</DropdownMenuLabel>
+            <div role="group" aria-label={t("dock.moveTo")} className="flex gap-1 px-1 pb-1">
+              {(["left", "right", "top", "bottom"] as const).map((to) => (
+                <DropdownMenuItem
+                  key={to}
+                  data-dock-move={to}
+                  aria-label={t(SIDE_WORDS[to])}
+                  title={t(SIDE_WORDS[to])}
+                  aria-current={to === side ? "true" : undefined}
+                  onSelect={() => to !== side && onMove(to)}
+                  className={cn("size-9 justify-center p-0", to === side && "bg-accent text-foreground")}
+                >
+                  {MOVE_ICON[to]}
+                </DropdownMenuItem>
+              ))}
+            </div>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <DropdownMenuItem onSelect={onToggle}>
+          {expanded ? <Collapse /> : <Expand />}
+          <span className="flex-1">{expanded ? t("dock.showConversation") : t("dock.expand")}</span>
+          <kbd className="font-sans text-caption text-muted-foreground">{keys}</kbd>
+        </DropdownMenuItem>
+        {popOut && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => popOut()}>
+              <AppWindow />
+              <span className="flex-1">{t("dock.newWindow")}</span>
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

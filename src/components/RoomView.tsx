@@ -92,14 +92,15 @@ import { RoomAgentsDialog } from "./room/RoomAgentsDialog";
 import { formatList, t } from "@/lib/i18n";
 import { FileText, Globe, PanelRight } from "@/components/icons";
 import { SideDock, type DockPane } from "./dock/SideDock";
+import { MiniDock } from "./dock/MiniDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
 import { createPortal } from "react-dom";
 import { useTitlebarSlot } from "@/lib/titlebarSlot";
 import { DockHostContext, type DockHost } from "./dock/context";
-import { DockedBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
+import { DockedBrowser, MiniBrowser, showPage, useBrowserState, useBrowserWhere } from "./browser/BrowserPanel";
 import { DOCK_SIDE_BY_SIDE, dock, placeIn, roomKey, useDockState } from "@/lib/dock";
-import { browserStatus, strongest, teammateActive, TEAMMATE_MS, type DockStatus } from "@/lib/dockActivity";
+import { browserStatus, pageOpen, strongest, teammateActive, TEAMMATE_MS, type DockStatus } from "@/lib/dockActivity";
 import { inThread, orderTopics, topicCounts, topicPowers, topicState, type RoomTopic, type TopicState } from "@/lib/roomTopics";
 import { NewTopicDialog, TopicBar, TopicPanel } from "./room/RoomTopics";
 
@@ -1140,6 +1141,8 @@ export function RoomView({ blok }: { blok: Blok }) {
             icon: <Globe size={15} />,
             status: browserStatus(browserState),
             render: (shown: boolean) => <DockedBrowser shown={shown} />,
+            minimizable: pageOpen(browserState),
+            mini: () => <MiniBrowser />,
           },
         ]
       : []),
@@ -1555,6 +1558,7 @@ export function RoomView({ blok }: { blok: Blok }) {
         />
       )}
       <JumpToLatest show={away && lens === "stream" && !fresh} fresh={freshBelow} onJump={toLatest} />
+      <MiniDock placeKey={dockKey} panes={dockPanes} />
       </div>
 
       <RoomComposer

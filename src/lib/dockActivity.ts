@@ -102,6 +102,13 @@ export function browserStatus(state: BrowserLike | null | undefined): DockStatus
   return state.tabs.some((tab) => tab.dialog) ? "waiting" : "working";
 }
 
+/** Whether the browser's tab in front has a page in it, which is when it
+ * can be minimized to a picture of it (dock/MiniDock.tsx). */
+export function pageOpen(state: { activeTabId: string | null; tabs: ReadonlyArray<{ id: string; url?: string }> } | null | undefined): boolean {
+  const url = state?.tabs.find((tab) => tab.id === state.activeTabId)?.url;
+  return Boolean(url && url !== "about:blank");
+}
+
 /** How long someone's last keystroke in a room counts as them being at it,
  * the same few seconds the room's "typing" line keeps. */
 export const TEAMMATE_MS = 6_000;

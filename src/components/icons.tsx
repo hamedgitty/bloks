@@ -185,6 +185,47 @@ const PanelRightShape = drawn(
     <path d="M15 4.5v15" />
   </>,
 );
+// The side panel's own controls: expand (two arrows out from the middle),
+// back beside the conversation (the same arrows pointing in), minimize to
+// a small window (a frame with a small one in its corner), and the four
+// sides a tab can move to, each a frame with that side filled.
+const ExpandShape = drawn(
+  "Expand",
+  <>
+    <path d="M14.25 4.5h5.25v5.25" />
+    <path d="M19.5 4.5l-6 6" />
+    <path d="M9.75 19.5H4.5v-5.25" />
+    <path d="M4.5 19.5l6-6" />
+  </>,
+);
+const CollapseShape = drawn(
+  "Collapse",
+  <>
+    <path d="M14.25 4.5v5.25h5.25" />
+    <path d="M14.25 9.75l5.25-5.25" />
+    <path d="M9.75 19.5v-5.25H4.5" />
+    <path d="M9.75 14.25L4.5 19.5" />
+  </>,
+);
+const MinimizeShape = drawn(
+  "Minimize",
+  <>
+    <path d="M20.25 11.25V6.75A2.25 2.25 0 0 0 18 4.5H6a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 6 19.5h5.25" />
+    <rect x="14.25" y="14.25" width="7.5" height="5.25" rx="1.5" />
+  </>,
+);
+const sideShape = (name: string, bar: { x: number; y: number; width: number; height: number }) =>
+  drawn(
+    name,
+    <>
+      <rect x="3.75" y="4.5" width="16.5" height="15" rx="2.25" />
+      <rect {...bar} rx="0.75" fill="currentColor" stroke="none" />
+    </>,
+  );
+const DockLeftShape = sideShape("DockLeft", { x: 6, y: 6.75, width: 4.5, height: 10.5 });
+const DockRightShape = sideShape("DockRight", { x: 13.5, y: 6.75, width: 4.5, height: 10.5 });
+const DockTopShape = sideShape("DockTop", { x: 6, y: 6.75, width: 12, height: 3.75 });
+const DockBottomShape = sideShape("DockBottom", { x: 6, y: 13.5, width: 12, height: 3.75 });
 const PanelBottomShape = drawn(
   "PanelBottom",
   <>
@@ -345,6 +386,13 @@ export const PanelFill = PanelFillShape;
 export const PanelSplit = PanelSplitShape;
 export const PanelTop = PanelTopShape;
 export const PanelLeft = PanelLeftShape;
+export const Expand = ExpandShape;
+export const Collapse = CollapseShape;
+export const Minimize = MinimizeShape;
+export const DockLeft = DockLeftShape;
+export const DockRight = DockRightShape;
+export const DockTop = DockTopShape;
+export const DockBottom = DockBottomShape;
 export const PanelRight = PanelRightShape;
 export const Pause = icon(PauseHero, "Pause");
 export const Pencil = icon(PencilHero, "Pencil");

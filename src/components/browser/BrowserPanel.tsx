@@ -26,7 +26,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
-  Download,
+  Copy,
   ExternalLink,
   File as FileIcon,
   FolderOpen,
@@ -35,16 +35,27 @@ import {
   History,
   Keyboard,
   Loader2,
-  Lock,
   MessageSquare,
+  MoreHorizontal,
   Play,
   Plus,
   Puzzle,
   RotateCw,
+  Server,
+  Settings,
   SquareTerminal,
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { AgentAvatar } from "@/components/Avatar";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
@@ -331,15 +342,6 @@ function BrowserPanel({
   }, [state?.closed]); // eslint-disable-line react-hooks/exhaustive-deps
   const allTabs = state?.tabs ?? [];
   const [scope, setScope] = useTabScope();
-  const scopeButton = agent && (
-    <HeaderButton
-      label={scope === "agent" ? t("browserPanel.scope.agentOn", { name: agent.name, count: allTabs.length - tabsInScope(allTabs, scope, agent.id, state?.activeTabId ?? null).length }) : t("browserPanel.scope.agentOff", { name: agent.name })}
-      pressed={scope === "agent"}
-      onClick={() => setScope(scope === "agent" ? "all" : "agent")}
-    >
-      <Bot size={15} />
-    </HeaderButton>
-  );
   const tabs = tabsInScope(allTabs, scope, agent?.id, state?.activeTabId ?? null);
   const hiddenTabs = allTabs.length - tabs.length;
   const nameOf = (botId: string, fallback: string) => botNames?.[botId] ?? fallback;
@@ -367,7 +369,7 @@ function BrowserPanel({
         )}
       </div>
 
-      <div className={cn("flex shrink-0 items-center gap-1 px-1.5 py-1.5", !flat && "border-t")}>
+      <div className={cn("flex shrink-0 items-center gap-1 px-2 py-1.5", !flat && "border-t")}>
         <HeaderButton label={t("common.back")} disabled={!active?.canGoBack} onClick={() => void act("back")}>
           <ArrowLeft size={15} />
         </HeaderButton>
@@ -378,21 +380,21 @@ function BrowserPanel({
           {active?.loading ? <X size={15} /> : <RotateCw size={15} />}
         </HeaderButton>
         <AddressBar key={active?.id ?? "none"} tab={active} disabled={absent} />
-        <HeaderButton
-          label={t("browserPanel.openThisPageInYour")}
-          disabled={!hostLabel(active?.url)}
-          onClick={() => (onServer ? openOutside(active?.url) : void act("openExternal"))}
-        >
-          <ExternalLink size={15} />
-        </HeaderButton>
-        <HeaderButton label={t("browserPanel.downloads")} pressed={shelf} onClick={() => setShelf((s) => !s)} className="relative">
-          <Download size={15} />
-          {state?.downloads.some((d) => d.state === "progressing") && (
-            <span aria-hidden className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-brand" />
-          )}
-        </HeaderButton>
+        {/* the extensions, the servers the agent started, and the rest in
+            one menu, so the row stays the page's own */}
         {extensions && !absent && <ExtensionsMenu source={extensions} onOpened={(view) => onServer && setExtensionView(view)} />}
-        {flat && scopeButton}
+        {agent && <ServersMenu agent={agent} tabs={state?.tabs} />}
+        <BrowserMore
+          url={active?.url}
+          onOpenOutside={() => (onServer ? openOutside(active?.url) : void act("openExternal"))}
+          shelf={shelf}
+          onShelf={() => setShelf((s) => !s)}
+          downloading={Boolean(state?.downloads.some((d) => d.state === "progressing"))}
+          agent={agent}
+          scope={scope}
+          onScope={setScope}
+          hidden={hiddenTabs}
+        />
       </div>
 
       {line && (
@@ -448,21 +450,16 @@ function BrowserPanel({
   );
 }
 
-/**
- * A tab with nothing in it: what Bloks knows can be previewed, each with
- * an Open button. The addresses on this computer the chat's agent's own
- * terminal tabs printed (a dev server it started), then the pages shown
- * here lately (src/lib/previews.ts). Asked again every few seconds while
- * shown, since a server says it is ready a moment after it starts.
- */
-function EmptyTab({ agent, tabs }: { agent?: { id: string; name: string }; tabs?: readonly BrowserTab[] }) {
+/** The chat's agent's own terminal tabs, asked again every few seconds
+ * while `on`, for the addresses they printed (src/lib/previews.ts). */
+function useAgentShells(agentId: string | undefined, on = true): TerminalInfo[] {
   const [shells, setShells] = useState<TerminalInfo[]>([]);
   useEffect(() => {
-    if (!agent) return;
+    if (!agentId || !on) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ask = () => {
-      api(`/api/bots/${agent.id}/terminals`)
+      api(`/api/bots/${agentId}/terminals`)
         .then((r: { terminals?: TerminalInfo[] }) => live && setShells(Array.isArray(r.terminals) ? r.terminals : []))
         // a device that cannot reach this computer's shells has none to offer
         .catch(() => {})
@@ -475,7 +472,124 @@ function EmptyTab({ agent, tabs }: { agent?: { id: string; name: string }; tabs?
       live = false;
       clearTimeout(timer);
     };
-  }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentId, on]);
+  return shells;
+}
+
+const MENU_TRIGGER =
+  "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
+
+/** The servers the chat's agent started in its terminal tabs, by the
+ * addresses they printed, each opened here with a click. */
+function ServersMenu({ agent, tabs }: { agent: { id: string; name: string }; tabs?: readonly BrowserTab[] }) {
+  const [open, setOpen] = useState(false);
+  const shells = useAgentShells(agent.id, open);
+  const servers = previewsFrom(shells, []);
+  return (
+    <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger aria-label={t("browserPanel.servers")} title={t("browserPanel.servers")} className={MENU_TRIGGER}>
+        <Server size={15} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[280px]">
+        <DropdownMenuLabel>{t("browserPanel.servers")}</DropdownMenuLabel>
+        {servers.length === 0 ? (
+          <p className="px-2 pb-2 pt-0.5 text-pretty text-small text-muted-foreground">{t("browserPanel.serversNone", { name: agent.name })}</p>
+        ) : (
+          servers.map((p) => (
+            <DropdownMenuItem key={p.url} onSelect={() => void showPage(p.url, tabs)} aria-label={t("browserPanel.previewOpen", { url: shownAddress(p.url) })}>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-mono text-small text-foreground">{shownAddress(p.url)}</span>
+                {p.from.kind === "terminal" && <span className="truncate text-caption text-muted-foreground">{p.from.title}</span>}
+              </span>
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-accent text-foreground">
+                <Play size={12} />
+              </span>
+            </DropdownMenuItem>
+          ))
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** The browser's other actions, in one menu at the end of its row: the
+ * page elsewhere, its address, the downloads, whose tabs show. */
+function BrowserMore({
+  url,
+  onOpenOutside,
+  shelf,
+  onShelf,
+  downloading,
+  agent,
+  scope,
+  onScope,
+  hidden,
+}: {
+  url?: string;
+  onOpenOutside: () => void;
+  shelf: boolean;
+  onShelf: () => void;
+  downloading: boolean;
+  agent?: { id: string; name: string };
+  scope: TabScope;
+  onScope: (next: TabScope) => void;
+  hidden: number;
+}) {
+  const { dispatch } = useStore();
+  const page = hostLabel(url) ? url : undefined;
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger aria-label={t("browserPanel.more")} title={t("browserPanel.more")} className={MENU_TRIGGER}>
+        <MoreHorizontal size={16} />
+        {downloading && <span aria-hidden className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-brand" />}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[240px]">
+        <DropdownMenuItem disabled={!page} onSelect={onOpenOutside}>
+          <ExternalLink />
+          {t("browserPanel.openInYourBrowser")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!page}
+          onSelect={() =>
+            void navigator.clipboard
+              .writeText(page!)
+              .then(() => toast.success(t("browserPanel.linkCopied")))
+              .catch(() => toast.error(t("browserPanel.linkNotCopied")))
+          }
+        >
+          <Copy />
+          {t("browserPanel.copyLink")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem checked={shelf} onCheckedChange={onShelf}>
+          <span className="flex-1">{t("browserPanel.downloads")}</span>
+          {downloading && <span className="text-caption text-muted-foreground">{t("browserPanel.downloading")}</span>}
+        </DropdownMenuCheckboxItem>
+        {agent && (
+          <DropdownMenuCheckboxItem checked={scope === "agent"} onCheckedChange={(on) => onScope(on ? "agent" : "all")}>
+            <span className="flex-1">{t("browserPanel.onlyAgentTabs", { name: agent.name })}</span>
+            {scope === "agent" && hidden > 0 && <span className="text-caption tabular-nums text-muted-foreground">{t("browserPanel.hiddenCount", { count: hidden })}</span>}
+          </DropdownMenuCheckboxItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>
+          <Settings />
+          {t("browserPanel.browserSettings")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * A tab with nothing in it: what Bloks knows can be previewed, each with
+ * an Open button. The addresses on this computer the chat's agent's own
+ * terminal tabs printed (a dev server it started), then the pages shown
+ * here lately (src/lib/previews.ts). Asked again every few seconds while
+ * shown, since a server says it is ready a moment after it starts.
+ */
+function EmptyTab({ agent, tabs }: { agent?: { id: string; name: string }; tabs?: readonly BrowserTab[] }) {
+  const shells = useAgentShells(agent?.id);
   const recent = (() => {
     try {
       return parseRecent(localStorage.getItem(RECENT_KEY));
@@ -1044,7 +1158,7 @@ function AddressBar({ tab, disabled }: { tab: BrowserTab | null; disabled?: bool
   }, [tab?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <form
-      className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-input bg-background px-2 transition-[border-color] duration-150 focus-within:border-ring/60 hover:border-foreground/25"
+      className="flex h-8 min-w-0 flex-1 items-center rounded-lg border border-transparent bg-accent px-3 transition-[border-color] duration-150 focus-within:border-ring/60"
       onSubmit={(e) => {
         e.preventDefault();
         const text = (typed ?? "").trim();
@@ -1057,11 +1171,6 @@ function AddressBar({ tab, disabled }: { tab: BrowserTab | null; disabled?: bool
         });
       }}
     >
-      {isSecure(tab?.url) && typed === null ? (
-        <Lock size={12} className="shrink-0 text-muted-foreground" aria-label={t("browserPanel.secureConnection")} />
-      ) : (
-        <Globe size={12} className="shrink-0 text-muted-foreground" aria-hidden />
-      )}
       <input
         ref={field}
         value={shown}
@@ -1080,7 +1189,10 @@ function AddressBar({ tab, disabled }: { tab: BrowserTab | null; disabled?: bool
         autoCorrect="off"
         placeholder={t("browserPanel.searchOrTypeAnAddress")}
         aria-label={t("common.address")}
-        className="min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+        title={isSecure(tab?.url) ? t("browserPanel.secureConnection") : undefined}
+        // the address in the middle while it is read, from the left while
+        // it is typed
+        className="min-w-0 flex-1 bg-transparent text-center text-body text-foreground outline-none placeholder:text-muted-foreground focus:text-left disabled:cursor-not-allowed"
       />
     </form>
   );
@@ -1239,6 +1351,51 @@ function Thumb({ jpeg, onServer }: { jpeg: string | null; onServer: boolean }): 
       src={`data:image/jpeg;base64,${jpeg}`}
       alt={onServer ? t("browserPanel.thePageInTheBrowser") : t("browserPanel.thePageOnTheMac")}
       className="h-12 w-20 shrink-0 rounded-lg border object-cover object-top"
+    />
+  );
+}
+
+/**
+ * The browser minimized out of the side panel (dock/MiniDock.tsx): its
+ * page is the app's own view, which cannot be drawn small, so this is a
+ * picture of the page in front, asked for every second while it is on
+ * screen, and the page's name until the first comes.
+ */
+export function MiniBrowser() {
+  const state = useBrowserState();
+  const active = state?.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
+  const [frame, setFrame] = useState<string | null>(null);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const look = () => {
+      if (document.visibilityState === "visible") {
+        api("/api/browser/frame")
+          .then((said: { live?: boolean; jpeg?: string }) => !stopped && said?.live && said.jpeg && setFrame(said.jpeg))
+          .catch(() => {});
+      }
+      timer = setTimeout(look, 1000);
+    };
+    look();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, []);
+  if (!frame) {
+    return (
+      <div className="flex size-full flex-col items-center justify-center gap-2 bg-background px-4 text-center text-small text-muted-foreground">
+        <Globe size={18} />
+        <span className="max-w-full truncate">{active ? tabLabel(active) : t("browserPanel.newTab")}</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={`data:image/jpeg;base64,${frame}`}
+      alt={active ? t("browserPanel.miniPage", { page: tabLabel(active) }) : t("browserPanel.thePageInTheBrowser")}
+      draggable={false}
+      className="size-full select-none bg-background object-cover object-top"
     />
   );
 }

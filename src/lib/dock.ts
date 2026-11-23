@@ -71,6 +71,19 @@ export interface DockPane {
   panel: DockPanel | null;
 }
 
+/** A corner of the conversation a minimized panel sits in (MiniDock.tsx). */
+export type DockCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+export const DOCK_CORNERS: readonly DockCorner[] = ["top-left", "top-right", "bottom-left", "bottom-right"];
+/** Most panels minimized at once in one conversation. */
+export const MAX_MINIMIZED = 2;
+
+/** A panel taken out of its pane into a small window over the
+ * conversation, and the corner it sits in. */
+export interface DockMini {
+  panel: DockPanel;
+  corner: DockCorner;
+}
+
 export interface DockPlace {
   /** The right pane: open or not, and the panel shown there, or last shown
    * before it was closed. */
@@ -83,6 +96,9 @@ export interface DockPlace {
    * (a panel not named here is on the right). */
   panes?: Partial<Record<OtherSide, DockPane>>;
   sides?: Partial<Record<DockPanel, OtherSide>>;
+  /** The panels minimized, oldest first (MAX_MINIMIZED at most). Not
+   * tabs while they are: putting one back makes it a tab again. */
+  minimized?: DockMini[];
   docs: DockDoc[];
   /** The document in front, among `docs`. */
   doc: string | null;
@@ -190,7 +206,51 @@ function forgetOldest(places: Record<string, DockPlace>): Record<string, DockPla
 /** Open on a panel. Asking again for the one shown keeps it shown: the
  * ribbon picks a panel, it does not close the dock (the X does). */
 export function showPanel(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
-  return withPlace(state, key, (p) => withPane({ ...p, tabs: withTab(p.tabs, panel) }, sideOf(p, panel), { open: true, panel }), now);
+  return withPlace(state, key, (p) => withPane({ ...unminimized(p, panel), tabs: withTab(p.tabs, panel) }, sideOf(p, panel), { open: true, panel }), now);
+}
+
+/** The place without that panel among its minimized ones. */
+function unminimized(place: DockPlace, panel: DockPanel): DockPlace {
+  if (!place.minimized?.some((m) => m.panel === panel)) return place;
+  const rest = place.minimized.filter((m) => m.panel !== panel);
+  const { minimized: _gone, ...without } = place;
+  return rest.length ? { ...without, minimized: rest } : without;
+}
+
+/** The panels minimized in a place. */
+export function minimizedIn(place: DockPlace): DockMini[] {
+  return place.minimized ?? [];
+}
+
+/** Whether another panel can be minimized here. */
+export function canMinimize(place: DockPlace, panel: DockPanel): boolean {
+  const now = minimizedIn(place);
+  return !now.some((m) => m.panel === panel) && now.length < MAX_MINIMIZED;
+}
+
+/**
+ * A tab minimized: it leaves its pane as closing it would (the one beside
+ * it comes forward, and the right pane left with none shows its list) and
+ * sits in a corner of the conversation, beside any already there. What
+ * the panel holds is kept. Refused past MAX_MINIMIZED.
+ */
+export function minimizeTab(state: DockState, key: string, panel: DockPanel, now = Date.now(), corner: DockCorner = "top-right"): DockState {
+  if (!canMinimize(placeIn(state, key), panel)) return state;
+  const closed = placeIn(state, key).tabs.includes(panel) ? closeTab(state, key, panel, now) : state;
+  return withPlace(closed, key, (p) => ({ ...p, minimized: [...minimizedIn(p), { panel, corner }] }), now);
+}
+
+/** A minimized panel put back: a tab again, in front on its own side. */
+export function restoreTab(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
+  if (!minimizedIn(placeIn(state, key)).some((m) => m.panel === panel)) return state;
+  return showPanel(state, key, panel, now);
+}
+
+/** A minimized panel dropped in another corner. */
+export function moveMini(state: DockState, key: string, panel: DockPanel, corner: DockCorner, now = Date.now()): DockState {
+  const place = placeIn(state, key);
+  if (!minimizedIn(place).some((m) => m.panel === panel && m.corner !== corner)) return state;
+  return withPlace(state, key, (p) => ({ ...p, minimized: minimizedIn(p).map((m) => (m.panel === panel ? { panel, corner } : m)) }), now);
 }
 
 /**
@@ -206,7 +266,7 @@ export function moveTab(state: DockState, key: string, panel: DockPanel, side: D
     state,
     key,
     (p) => {
-      let next = p;
+      let next = unminimized(p, panel);
       const left = paneOf(p, from);
       if (left.panel === panel) {
         const rest = tabsOn(p, from).filter((t) => t !== panel);
@@ -268,6 +328,7 @@ export function toggleDock(state: DockState, key: string, offered: readonly Dock
  * the one shown, the dock closes rather than showing something else the
  * person did not ask for. */
 export function dropPanel(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
+  if (minimizedIn(placeIn(state, key)).some((m) => m.panel === panel)) state = withPlace(state, key, (p) => unminimized(p, panel), now);
   const place = placeIn(state, key);
   const side = sideOf(place, panel);
   if (paneOf(place, side).panel !== panel) return place.tabs.includes(panel) ? withPlace(state, key, (p) => ({ ...p, tabs: p.tabs.filter((t) => t !== panel) }), now) : state;
@@ -304,7 +365,8 @@ export function mayReveal(
 ): boolean {
   if (!key || isRoomKey(key)) return false;
   if (room.width < REVEAL_WIDTH || room.declined) return false;
-  if (shownAnywhere(place, panel)) return false;
+  // on screen in a pane, or minimized: either way it is in view already
+  if (shownAnywhere(place, panel) || minimizedIn(place).some((m) => m.panel === panel)) return false;
   return !(anyPaneOpen(place) && room.typingInDock);
 }
 
@@ -437,6 +499,22 @@ export function parseSizes(raw: string | null): Partial<Record<OtherSide, number
   }
 }
 
+/** Minimized panels as kept: known panels, known corners, none that is
+ * also a tab, none twice, MAX_MINIMIZED at most. */
+function cleanMinimized(raw: unknown, tabs: readonly DockPanel[]): DockMini[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DockMini[] = [];
+  for (const m of raw) {
+    const panel = m && typeof m === "object" ? (m as Record<string, unknown>).panel : null;
+    const corner = m && typeof m === "object" ? (m as Record<string, unknown>).corner : null;
+    if (typeof panel !== "string" || !PANEL_SET.has(panel) || tabs.includes(panel as DockPanel)) continue;
+    if (typeof corner !== "string" || !DOCK_CORNERS.includes(corner as DockCorner)) continue;
+    if (out.some((o) => o.panel === panel)) continue;
+    out.push({ panel: panel as DockPanel, corner: corner as DockCorner });
+  }
+  return out.slice(0, MAX_MINIMIZED);
+}
+
 export function parseDock(raw: string | null, width: string | null, legacyWidth: string | null = null, sizes: string | null = null): DockState {
   let saved: Record<string, unknown> = {};
   try {
@@ -458,7 +536,17 @@ export function parseDock(raw: string | null, width: string | null, legacyWidth:
     const placed = cleanSides(v, tabs);
     // the right pane shows a panel only while it is on the right
     const right = panel && !placed.sides?.[panel] ? panel : null;
-    places[key] = { open: v.open === true && right !== null, panel: right, tabs, docs, doc, at: typeof v.at === "number" ? v.at : 0, ...placed };
+    const minimized = cleanMinimized(v.minimized, tabs);
+    places[key] = {
+      open: v.open === true && right !== null,
+      panel: right,
+      tabs,
+      docs,
+      doc,
+      at: typeof v.at === "number" ? v.at : 0,
+      ...placed,
+      ...(minimized.length ? { minimized } : {}),
+    };
   }
   const n = Number(width ?? legacyWidth);
   return { places: forgetOldest(places), width: Number.isFinite(n) && n > 0 ? n : DOCK_SIZE.fallback, sizes: parseSizes(sizes) };
@@ -636,6 +724,9 @@ export const dock = {
   hide: (key: string, side: DockSide = "right") => byPerson(key, hideDock(read(), key, Date.now(), side)),
   toggle: (key: string, offered: readonly DockPanel[]) => byPerson(key, toggleDock(read(), key, offered), placeIn(toggleDock(read(), key, offered), key).panel ?? undefined),
   closeTab: (key: string, panel: DockPanel) => byPerson(key, closeTab(read(), key, panel)),
+  minimize: (key: string, panel: DockPanel) => commit(minimizeTab(read(), key, panel)),
+  restore: (key: string, panel: DockPanel) => byPerson(key, restoreTab(read(), key, panel), panel),
+  moveMini: (key: string, panel: DockPanel, corner: DockCorner) => commit(moveMini(read(), key, panel, corner)),
   /** A tab moved to another side, by the person. */
   move: (key: string, panel: DockPanel, side: DockSide) => byPerson(key, moveTab(read(), key, panel, side), panel),
   /** A side pane's width (left) or height (top, bottom), on this device. */

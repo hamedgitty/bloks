@@ -21,9 +21,10 @@ import { GenUiHost } from "./genui/host";
 import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
 import { showTerminalTab, useTerminalTabs } from "./Terminal";
-import { act as browserAct, BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
+import { act as browserAct, BrowsingOnMac, DockedBrowser, MiniBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
 import { Activity, Bot as BotIcon, Eraser, FileDiff, Folder, Globe, Hourglass, PanelRight, Phone, Plus, Settings } from "@/components/icons";
 import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
+import { MiniDock } from "./dock/MiniDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
 import { ChangesPanel, useLaneChanges } from "./dock/ChangesPanel";
@@ -32,7 +33,7 @@ import { runningCount } from "@/lib/backgroundTasks";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
 import { chatKey, dock, DOCK_SIDES, paneOf, placeIn, shownAnywhere, sideOf, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
-import { browserStatus, computerStatus, currentTurn, strongest, tabsInScope, turnComputerUse } from "@/lib/dockActivity";
+import { browserStatus, computerStatus, pageOpen, currentTurn, strongest, tabsInScope, turnComputerUse } from "@/lib/dockActivity";
 import { tabLabel } from "@/lib/appBrowser";
 import { dockChord, expandChord, panelChord } from "@/lib/dockKeys";
 import { changesRound, changeTotals, totalsLabel } from "@/lib/laneChanges";
@@ -944,6 +945,9 @@ export function ChatView({ bot }: { bot: Bot }) {
             })),
             onAdd: () => void browserAct("newTab"),
             render: (shown: boolean) => <DockedBrowser shown={shown} botNames={botNames} agent={{ id: bot.id, name: bot.name }} flat />,
+            // minimized only with a page in it, as a picture of the page
+            minimizable: pageOpen(browserState),
+            mini: () => <MiniBrowser />,
           },
         ]
       : []),
@@ -1627,6 +1631,9 @@ export function ChatView({ bot }: { bot: Bot }) {
         />
       )}
       <JumpToLatest show={away && !empty} fresh={freshBelow} onJump={toLatest} />
+      {/* panels minimized out of the side panel, in the conversation's
+          corners above where you type */}
+      <MiniDock placeKey={dockKey} panes={dockPanes} />
       </div>
 
       <BrowsingOnMac botId={bot.id} name={bot.name} />

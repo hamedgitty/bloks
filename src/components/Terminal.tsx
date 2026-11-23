@@ -27,6 +27,8 @@ import { ArrowDown, Bot, Minimize2, Plus, X } from "@/components/icons";
 import { confirm } from "@/components/ui/confirm";
 import { toast } from "@/components/ui/toast";
 import { HeaderButton, LayoutMenu, MoreMenu } from "@/components/terminal/TerminalMenus";
+import { createPortal } from "react-dom";
+import { useDockActions } from "@/lib/dockActions";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/cn";
 import { chordLabel, platformOf } from "@/lib/shortcuts";
@@ -709,6 +711,9 @@ export function TerminalPanel({
   }, [mode, current, botName]);
 
   const fill = mode === "fill";
+  // in the side panel, where its menu goes in the panel's top row; none
+  // while minimized, where the small window's header is all there is
+  const dockActions = useDockActions("terminal");
   const mac = platform === "mac";
   // Covering the whole window, the header is the window's handle, and in
   // the Mac app it starts after the traffic lights (BUTTONS in
@@ -716,6 +721,18 @@ export function TerminalPanel({
   const underLights = fill && mac && navigator.userAgent.includes("Electron");
   const stepKeys = `${chordLabel(["Mod", "Shift", "["], platform)} ${chordLabel(["Mod", "Shift", "]"], platform)}`;
 
+  const moreMenu = (
+    <MoreMenu
+      prefs={prefs}
+      onPrefs={setPrefs}
+      hasTab={Boolean(current)}
+      onClear={() => current && clear(current.id)}
+      onRestart={() => current && void restart(current.id)}
+      onRename={() => current && setRenaming(current.id)}
+      onCloseTab={() => current && void closeTab(current.id)}
+      onClosed={() => !renaming && focusTab(current?.id ?? null)}
+    />
+  );
   return (
     <div
       ref={root}
@@ -730,10 +747,10 @@ export function TerminalPanel({
           "flex h-[38px] shrink-0 items-center gap-1 px-1.5",
           fill && "titlebar-drag",
           underLights && "pl-[84px]",
-          // in the dock its tabs are the dock's; only the menu stays, in
-          // the screen's corner
-          flat && "absolute right-1.5 top-1 z-10 h-8 rounded-lg bg-card/90 px-0.5 opacity-70 shadow-sm transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
         )}
+        // in the side panel its tabs are the panel's, and its menu sits in
+        // the panel's top row (below)
+        hidden={flat}
       >
         <div
           role="tablist"
@@ -829,16 +846,7 @@ export function TerminalPanel({
             {t("terminal.limited")}
           </span>
         )}
-        <MoreMenu
-          prefs={prefs}
-          onPrefs={setPrefs}
-          hasTab={Boolean(current)}
-          onClear={() => current && clear(current.id)}
-          onRestart={() => current && void restart(current.id)}
-          onRename={() => current && setRenaming(current.id)}
-          onCloseTab={() => current && void closeTab(current.id)}
-          onClosed={() => !renaming && focusTab(current?.id ?? null)}
-        />
+        {!flat && moreMenu}
         {mode !== "window" && !flat && (
           <LayoutMenu
             layout={layout}
@@ -859,6 +867,7 @@ export function TerminalPanel({
         )}
       </div>
 
+      {flat && dockActions && createPortal(moreMenu, dockActions)}
       {lost && (
         <div role="status" className="shrink-0 border-t bg-destructive/10 px-3 py-1.5 text-small text-destructive">
           {t("terminal.lostTheConnectionToThe")}

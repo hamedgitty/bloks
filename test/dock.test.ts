@@ -18,6 +18,11 @@ import {
   closeDoc,
   closeTab,
   sideForNew,
+  minimizeTab,
+  restoreTab,
+  moveMini,
+  minimizedIn,
+  canMinimize,
   clampPaneHeight,
   ACROSS_SIZE,
   dropPanel,
@@ -420,6 +425,41 @@ describe("panes on every side", () => {
     // closed, it is open nowhere, and comes where it is asked for
     s = closeTab(s, a, "browser", 4);
     assert.equal(sideForNew(placeIn(s, a), "browser", "bottom"), "bottom");
+  });
+
+  test("a minimized tab leaves its pane for a corner, and comes back as a tab", () => {
+    let s = showPanel(showPanel(empty(), a, "changes", 1), a, "browser", 2);
+    s = minimizeTab(s, a, "browser", 3);
+    let place = placeIn(s, a);
+    assert.deepEqual(minimizedIn(place), [{ panel: "browser", corner: "top-right" }]);
+    assert.deepEqual(place.tabs, ["changes"], "no longer a tab");
+    assert.equal(place.panel, "changes", "its neighbour comes forward");
+    s = minimizeTab(s, a, "changes", 4);
+    place = placeIn(s, a);
+    assert.equal(place.open, true, "the right pane stays open on its list");
+    assert.equal(place.panel, null);
+    assert.equal(canMinimize(place, "terminal"), false, "two at most");
+    const withTerminal = showPanel(s, a, "terminal", 5);
+    assert.equal(minimizeTab(withTerminal, a, "terminal", 6), withTerminal, "a third is refused");
+    s = moveMini(s, a, "browser", "bottom-left", 7);
+    assert.equal(minimizedIn(placeIn(s, a)).find((m) => m.panel === "browser")?.corner, "bottom-left");
+    s = restoreTab(s, a, "browser", 8);
+    place = placeIn(s, a);
+    assert.deepEqual(minimizedIn(place).map((m) => m.panel), ["changes"]);
+    assert.equal(place.panel, "browser");
+    assert.ok(place.tabs.includes("browser"));
+    // showing a minimized panel by its key or the list puts it back too
+    s = showPanel(s, a, "changes", 9);
+    assert.deepEqual(minimizedIn(placeIn(s, a)), []);
+  });
+
+  test("a minimized panel is in view: an agent's work does not open it again, and it is kept", () => {
+    const s = minimizeTab(showPanel(empty(), a, "browser", 1), a, "browser", 2);
+    assert.equal(mayReveal(a, placeIn(s, a), "browser", { width: 4000, typingInDock: false }), false);
+    const back = parseDock(JSON.stringify(s.places), null);
+    assert.deepEqual(minimizedIn(placeIn(back, a)), [{ panel: "browser", corner: "top-right" }]);
+    const odd = parseDock(JSON.stringify({ [a]: { open: false, panel: null, tabs: ["docs"], minimized: [{ panel: "docs", corner: "top-right" }, { panel: "browser", corner: "middle" }, { panel: "trace", corner: "bottom-left" }] } }), null);
+    assert.deepEqual(minimizedIn(placeIn(odd, a)), [{ panel: "trace", corner: "bottom-left" }], "a tab, an unknown corner dropped");
   });
 
   test("showing, closing and hiding happen on the panel's own side", () => {
