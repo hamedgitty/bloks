@@ -206,8 +206,13 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  /* The emoji faces close the stack, as in Tailwind's own default, so a
+     system that does not find one by itself still gets one. Last, so
+     anything a text face draws, digits and ₿ included, stays on it; a
+     symbol no text face has, like a bare ☀, may come out as an emoji. */
   --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
-    "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    "SF Pro Text", "Segoe UI", system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
   /* The type scale: nine sizes, each with the leading it reads best at.
