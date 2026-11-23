@@ -73,6 +73,10 @@ export interface AcpSpec {
   /** A model's name as the picker shows it, for an agent whose names carry
    * the effort its separate selector actually decides. */
   modelLabel?: (label: string) => string;
+  /** Splits a legacy combined model+effort id (such as Antigravity's
+   * "gemini-4-hydrogen-xhigh" from before it moved to ACP) into a listed
+   * model id and its implied effort when the session lists the base model. */
+  legacyModel?: (model: string, catalog: ModelCatalog) => { model: string; effort?: Effort } | null;
   /** This agent carries choice questions in ACP permission requests. */
   questionRequests?: boolean;
   /** Inherited env vars to strip before spawning. A CLI that owns its own
@@ -182,6 +186,11 @@ const PROBE_TIMEOUT_MS = 15_000;
  * enough that a screen polling the engines does not start a process each
  * time, short enough that signing in shows up while the person watches. */
 const SIGN_IN_TTL_MS = 3_000;
+
+/** How long a probed catalog is treated as current, and how soon a failed
+ * probe may be retried when Settings checks the engine. */
+const CATALOG_FRESH_MS = 10 * 60_000;
+const CATALOG_RETRY_MS = 60_000;
 
 /** A turn's pictures as ACP prompt blocks, the bytes inline: an image
  * block by its data needs no path, so nothing about where the file sits
@@ -578,6 +587,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
       // replaced the first time an agent tells us what it serves
       const models: ModelCatalog = { default: spec.models.default, options: [...spec.models.options] };
+      const catalogListeners = new Set<() => void>();
+      const notifyCatalog = () => {
+        for (const listener of [...catalogListeners]) listener();
+      };
+      let catalogAsked = 0;
+      let catalogCheckedAt = 0;
+      let probing: Promise<void> | null = null;
       const defaultEfforts = new Map<string, string>();
       const rememberDefaultEffort = (session: any) => {
         if (!spec.effortOption) return;
@@ -588,9 +604,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       const updateCatalog = (session: any) => {
         const catalog = catalogFromSession(session, spec, models);
         if (catalog) {
+          const before = JSON.stringify([models.default, models.options]);
           const defaultModel = spec.effortOption && catalog.options.some((entry) => entry.id === models.default) ? models.default : catalog.default;
           models.options = catalog.options;
           models.default = defaultModel;
+          catalogCheckedAt = Date.now();
+          if (JSON.stringify([models.default, models.options]) !== before) notifyCatalog();
         }
         return catalog;
       };
@@ -634,26 +653,31 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
       // Engines that build their catalog from their own configuration
       // are probed once with a throwaway session, so the picker starts
-      // with real models. A failed probe leaves the placeholder; the
-      // first turn replaces it with what the agent serves.
-      let finishCatalog = () => {};
-      const catalogReady = spec.probeModels
-        ? new Promise<void>((resolve) => {
-            finishCatalog = resolve;
-          })
-        : undefined;
-      if (spec.probeModels) {
-        widenPath();
-        void seeded()
-          .then(() => probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined))
-          .then((catalog) => {
-            if (catalog) {
-              models.options = catalog.options;
-              models.default = catalog.default;
-            }
-            finishCatalog();
-          });
-      }
+      // with real models. A failed probe leaves the placeholder; Settings
+      // checks re-probe after the retry window and the first turn replaces
+      // it with what the agent serves.
+      const refreshCatalog = async (): Promise<void> => {
+        if (!spec.probeModels) return;
+        return (probing ??= (async () => {
+          catalogAsked = Date.now();
+          widenPath();
+          await seeded();
+          const catalog = await probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined);
+          probing = null;
+          if (catalog) {
+            const before = JSON.stringify([models.default, models.options]);
+            models.options = catalog.options;
+            models.default = catalog.default;
+            catalogCheckedAt = Date.now();
+            if (JSON.stringify([models.default, models.options]) !== before) notifyCatalog();
+          }
+        })());
+      };
+      const catalogReady = spec.probeModels ? refreshCatalog() : undefined;
+      const freshenCatalog = () => {
+        if (!spec.probeModels) return;
+        if (Date.now() - catalogAsked >= (catalogCheckedAt ? CATALOG_FRESH_MS : CATALOG_RETRY_MS)) void refreshCatalog();
+      };
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
@@ -661,11 +685,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const turnId = newId();
         if (!turn.place) await seeded();
 
+        const fullAuto = (config.fullAuto && !turn.untrusted) || Boolean(turn.fullAccess && !turn.shared);
         const argv = [
           ...spec.args,
           ...(spec.turnArgs?.({
             // a turn the owner did not vouch for asks, however the engine is set
-            fullAuto: config.fullAuto && !turn.untrusted,
+            fullAuto,
             model: turn.model,
             effort: turn.effort,
           }) ?? []),
@@ -1240,12 +1265,20 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
             // the agent knows its own model list better than we do
             let model = turn.model;
+            let legacyEffort: Effort | undefined;
             // A model the agent will not switch to must not quietly become
             // a turn on whatever model it already had: say so and stop
             // before anything is sent or spent.
             const selectModel = async () => {
               const catalog = updateCatalog(session);
               if (spec.effortOption && model === "auto" && !catalog?.options.some((entry) => entry.id === "auto")) model = models.default;
+              if (spec.effortOption && model && catalog && !catalog.options.some((entry) => entry.id === model)) {
+                const migrated = spec.legacyModel?.(model, catalog);
+                if (migrated && catalog.options.some((entry) => entry.id === migrated.model)) {
+                  model = migrated.model;
+                  if (!turn.effort && migrated.effort) legacyEffort = migrated.effort;
+                }
+              }
               if (spec.effortOption && model && !catalog?.options.some((entry) => entry.id === model)) {
                 throw new Error(`${spec.name} does not offer ${model} in this session, so the message was not sent. Pick a listed model or start a new conversation.`);
               }
@@ -1265,7 +1298,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               }
             };
             await selectModel();
-            if (spec.effortOption && !freshSession && !turn.effort) {
+            const requestedEffort = turn.effort ?? legacyEffort;
+            if (spec.effortOption && !freshSession && !requestedEffort) {
               const option = configOption(session, spec.effortOption);
               const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue);
               // Command Code cannot reset an explicit effort to provider
@@ -1285,7 +1319,6 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             // agents use modes for something else entirely (pi-acp's are
             // thinking levels), so only ask for it where it exists.
             const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
-            const fullAuto = (config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared);
             if (spec.permissionModes) {
               // An agent that also lists its modes as a config option (Devin)
               // is set and confirmed there; one with only session modes is
@@ -1329,12 +1362,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               const levels = effortChoices(spec, option);
               const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue)
                 ?? (option?.currentValue === spec.effortDefault ? spec.effortDefault : undefined);
-              const wanted = turn.effort ?? (!freshSession ? nativeDefault : undefined);
+              const wanted = requestedEffort ?? (!freshSession ? nativeDefault : undefined);
               if (wanted && !levels.length) throw new Error(`${spec.name} does not report reasoning choices for this model, so the message was not sent. Choose a model that reports them or start a new conversation.`);
               if (!freshSession && !wanted && levels.length) throw new Error(`${spec.name}'s default reasoning effort is not known for this model, so the message was not sent. Choose a reasoning level or start a new conversation.`);
               const effort = wanted === spec.effortDefault ? wanted : clampEffort(wanted, levels);
               const value = effort && nativeEffort(spec, effort);
-              if (value && (turn.effort || option.currentValue !== value)) {
+              if (value && (requestedEffort || option.currentValue !== value)) {
                 try {
                   const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value }), "selecting the reasoning effort", spec.name);
                   session = { ...session, ...changed };
@@ -1475,11 +1508,14 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const signedIn = ownSetup
           ? existsSync(join(isolatedOpencodePaths().opencodeDataDir, "auth.json"))
           : (spec.authFiles ?? []).some((f) => existsSync(join(homedir(), f)));
-        // An agent that answers without a sign-in is not "signed out" for
-        // want of one: saying so put up a warning nobody could clear while
-        // the agent was answering fine on a free model.
+        // An agent that answers without a sign-in, or keeps its sign-in in
+        // the system keyring with no file or check to read, is not "signed
+        // out" for want of one: leave authenticated unknown rather than
+        // showing a warning nobody could clear while it answers fine.
+        const canCheckAuth = Boolean(spec.authFiles?.length || spec.signInCheck);
         const authenticated =
-          hasKey || signedIn ? true : spec.signInCheck ? await askSignedIn() : spec.signInOptional ? undefined : false;
+          hasKey || signedIn ? true : spec.signInCheck ? await askSignedIn() : spec.signInOptional || !canCheckAuth ? undefined : false;
+        freshenCatalog();
         return { state: "available", version: `${spec.name} ${version}`, authenticated };
       };
 
@@ -1511,6 +1547,11 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         models,
         snapshot,
         catalogReady,
+        ...(spec.probeModels ? { refreshCatalog } : {}),
+        onCatalogChange: (listener) => {
+          catalogListeners.add(listener);
+          return () => catalogListeners.delete(listener);
+        },
         adapter: {
           provider: spec.kind,
           // images: handed the turn's pictures, which go on only to an
@@ -1535,6 +1576,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         dispose: async () => {
           for (const { stop } of active.values()) stop();
           listeners.clear();
+          catalogListeners.clear();
           await engines.end();
         },
       };
@@ -1711,6 +1753,41 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     // "signed out"
     signInOptional: true,
     // whichever provider Cline is set up with decides its catalog
+    probeModels: true,
+    models: {
+      default: "auto",
+      options: [{ id: "auto", label: "Auto" }],
+    },
+  },
+  {
+    kind: "antigravity",
+    name: "Antigravity",
+    command: "agy",
+    args: ["acp"],
+    // Full access and Full auto bypass agy's own approval prompts; ordinary
+    // turns stay in default mode so every ask reaches Bloks' approval gate.
+    turnArgs: ({ fullAuto }) => (fullAuto ? ["--dangerously-skip-permissions"] : []),
+    // Set mode on every new and resumed session so a saved settings.json
+    // mode (accept-edits, auto, plan) cannot bypass approvals or stall in plan.
+    permissionModes: { default: "default", fullAuto: "default" },
+    // agy 1.5.0 introduced `agy acp`.
+    minVersion: "1.5.0",
+    install: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    signIn: "run `agy` once to sign in with Google",
+    // agy keeps its Google login in the system keyring with no local file to
+    // check, so authFiles and signInCheck stay unset and auth reads unknown.
+    effortOption: "thought_level",
+    efforts: EFFORTS,
+    // Agents saved before Antigravity moved to ACP carry combined ids such as
+    // "gemini-4-hydrogen-xhigh"; split off the trailing level when the ACP
+    // catalog lists the base model separately.
+    legacyModel: (model, catalog) => {
+      const match = /^(.+)-(low|medium|high|xhigh|max)$/.exec(model);
+      if (!match) return null;
+      const [, base, level] = match;
+      if (!catalog.options.some((entry) => entry.id === base)) return null;
+      return { model: base, effort: level as Effort };
+    },
     probeModels: true,
     models: {
       default: "auto",

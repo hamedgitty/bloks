@@ -49,7 +49,7 @@ describe("what each engine is handed", () => {
     assert.deepEqual(await screensOf("claudeAgent", { cli: "/nonexistent/claude" }), ALL_SCREENS);
     // GitHub 482: in the thread config, as test/codex-screens.test.ts shows
     assert.deepEqual(await screensOf("codex", { cli: "/nonexistent/codex" }), ALL_SCREENS);
-    for (const kind of ["opencode", "devin", "geminiCli", "cursor", "grokCli", "commandcode"]) {
+    for (const kind of ["antigravity", "opencode", "devin", "geminiCli", "cursor", "grokCli", "commandcode"]) {
       assert.deepEqual(await screensOf(kind, { cli: "/nonexistent/acp-stand-in" }), ALL_SCREENS, kind);
     }
   });
@@ -63,9 +63,8 @@ describe("what each engine is handed", () => {
     assert.deepEqual(await screensOf("custom", { baseUrl: "http://127.0.0.1:9", tools: false }), NO_SCREENS);
   });
 
-  test("the cloud engine works the box it runs on, and engines that say nothing take nothing", async () => {
+  test("the cloud engine works the box it runs on", async () => {
     assert.deepEqual(await screensOf("boxAgent"), CLOUD_ONLY);
-    assert.equal(await screensOf("antigravity", { cli: "/nonexistent/agy" }), undefined);
   });
 });
 

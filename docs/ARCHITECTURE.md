@@ -138,7 +138,7 @@ An agent that cannot reach one is told in its prompt that it has
 neither, and so is a Codex agent whose Codex refuses the servers. Pi and
 Cline accept MCP servers and drop them (`mcp: false` in their specs), so
 they take none. The API models reach the cloud box through the harness's
-tool loop and nothing else; Antigravity takes none yet. Before a turn
+tool loop and nothing else. Before a turn
 the harness gets ready only what the engine
 takes: the Local VM is not claimed and the cloud box is not woken for an
 engine that cannot use them, and the agent is told plainly what its
@@ -1551,9 +1551,8 @@ window, which Claude Code gives per message (`promptSize`) and in its
 result (`modelUsage[model].contextWindow`), Codex in
 `thread/tokenUsage/updated` (`last.inputTokens` against
 `modelContextWindow`), an ACP agent in `usage_update` (`used`, `size`),
-an OpenAI-compatible provider in each response's `prompt_tokens`, one
-reading per request of a tool loop, and Antigravity in each
-`agent_response` step's usage, whose window comes from the table. The lane keeps the latest as
+and an OpenAI-compatible provider in each response's `prompt_tokens`, one
+reading per request of a tool loop. The lane keeps the latest as
 `reading`, with the engine and model that made it (`store.noteReading`),
 and `laneFill` uses it only while the agent is on that engine and model,
 with the table in `server/context.ts` as the fallback window, which the
@@ -2416,9 +2415,8 @@ order, runs of spaces made one) and hashed (`callSignature` in
 event. Claude Code gives `block.input`, Codex the item's own request
 fields (a command and its folder, a patch's changes, an MCP call's server,
 tool and arguments, a search's query), an ACP agent its `rawInput` when it
-is not empty, and an API model the arguments it wrote. Antigravity and the
-cloud computer name the tool and nothing more, so their calls are not
-counted.
+is not empty, and an API model the arguments it wrote. The cloud computer
+names the tool and nothing more, so its calls are not counted.
 
 `RepeatWatch` counts each running turn's calls by signature, from nothing
 at every `startTurn` and forgotten at its end. When a call reaches 5, 10
@@ -5162,15 +5160,9 @@ decides whether a request becomes a card. `full` also sets `fullAccess`
 on the turn, and each driver takes its engine's own guard off: Claude
 Code runs with `bypassPermissions` and no approval bridge, Codex with
 `danger-full-access` and `approvalPolicy: never` (stated on resume too),
-ACP engines in their `yolo` mode, Antigravity with
-`--dangerously-skip-permissions`. Nothing asks, so rules cannot refuse
-anything in that mode. Antigravity's print mode has no way to raise a
-card at all, so its turn is told the mode up front instead (GitHub 542):
-`auto` sets `autoApproves` and agy runs in its own `--mode auto`, where
-edits and the commands agy's reviewer clears go ahead and the rest are
-refused; `ask` and `edits` run it in `accept-edits`, where edits go
-ahead and every command is refused. Rules cannot see what agy does in
-either. A shared room never gets `fullAccess`, and nor
+ACP engines in their `yolo` or bypass mode (Antigravity with
+`--dangerously-skip-permissions`). Nothing asks, so rules cannot refuse
+anything in that mode. A shared room never gets `fullAccess`, and nor
 does an email from anyone (see Email your agent): a turn somebody other
 than the owner asked for is held to the owner's yes, whatever the mode.
 

@@ -155,7 +155,7 @@ stands.
 engine both allow.** Its own browser, with any sign-ins you borrowed into
 it, and its computer reach an agent as tools on Claude Code, on Codex
 and on the ACP agents that take MCP servers (Devin, OpenCode, Gemini CLI,
-Cursor, Grok CLI, Command Code), only on a turn you asked for or set up,
+Antigravity, Cursor, Grok CLI, Command Code), only on a turn you asked for or set up,
 never on an email from anyone or a shared room member's turn unless you
 opened them to that room. Codex never has them on a turn that is not
 yours, whatever the room allows. Claude Code and Codex call them without
