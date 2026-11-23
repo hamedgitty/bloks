@@ -709,28 +709,66 @@
 }
 
 /* The conversation tab in front (TaskStrip.tsx), outlined in the colours
- * of the sidebar's edge below: a hairline up its left side, round its top
- * corner and along its top, fading out before the far side, so the light
- * at the edge seems to run on into the tab. Three mask layers: the fade,
- * over the ring left between the padding (left and top only) and the box. */
+ * of the sidebar's edge, quietly: a hairline that comes along the band's
+ * foot from the sidebar, follows the curve where the tab meets the band
+ * (.tab-joined::before), rises up the tab's side, rounds its top corner
+ * and fades out along its top. --reach is how far the tab sits from the
+ * strip's start, so the foot reaches the sidebar from wherever it is.
+ * Like the sidebar's own line, which is faded where it meets the band, it
+ * starts barely there, gathers up the curve and the side, is at its
+ * strongest in the top corner, and fades out along the top.
+ *
+ * The side and top are one ring cut from a box by masks: the fade to the
+ * right, over the ring left between the padding (left and top only) and
+ * the box. It stops a curve's height above the foot, where the arc (a
+ * band of a circle around the curve's own centre) takes over. */
 .tab-outline {
+  --hair: 1px;
   position: absolute;
   inset: 0;
-  border-radius: 10px 10px 0 0;
-  padding: 1.5px 0 0 1.5px;
   pointer-events: none;
-  background: linear-gradient(to right bottom, #5ce1e6, #cb6ce6 40%, #ff5757 80%);
-  opacity: 0.85;
+}
+.tab-outline::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 10px calc(-1 * var(--hair));
+  border-radius: 10px 10px 0 0;
+  padding: var(--hair) 0 0 var(--hair);
+  background: linear-gradient(to top, rgb(203 108 230 / 0.45), rgb(92 225 230 / 0.85) 80%);
   -webkit-mask:
-    linear-gradient(to right, #000 15%, transparent 75%),
+    linear-gradient(to right, #000 12%, transparent 70%),
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   -webkit-mask-composite: source-in, xor;
   mask:
-    linear-gradient(to right, #000 15%, transparent 75%),
+    linear-gradient(to right, #000 12%, transparent 70%),
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: intersect, exclude;
+}
+.tab-outline::after {
+  content: "";
+  position: absolute;
+  left: -10px;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  background: radial-gradient(
+    circle at 0 0,
+    transparent calc(10px - var(--hair) - 0.35px),
+    rgb(203 108 230 / 0.4) calc(10px - var(--hair)),
+    rgb(203 108 230 / 0.4) 10px,
+    transparent 10.35px
+  );
+}
+.tab-outline > span {
+  position: absolute;
+  bottom: 0;
+  left: calc(-1 * var(--reach, 0px));
+  width: max(0px, calc(var(--reach, 0px) - 10px));
+  height: var(--hair);
+  /* nothing where it leaves the sidebar, gathering toward the curve */
+  background: linear-gradient(to right, rgb(203 108 230 / 0), rgb(203 108 230 / 0.35));
 }
 
 /* The edge of a page's column (SideColumn.tsx): the brand gradient as a

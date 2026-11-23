@@ -22,7 +22,7 @@
 //
 // A lane names itself from the first words of its first message, which
 // often say nothing about what it became. A double click renames it.
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useFadeScroll } from "@/lib/fadeScroll";
 import { Plus } from "@/components/icons";
 import { X } from "@/components/icons";
@@ -205,6 +205,25 @@ export function TaskStrip({
   // side with more (src/lib/fadeScroll.ts)
   const strip = useRef<HTMLDivElement>(null);
   const fade = useFadeScroll(strip, activeId);
+  // how far the open tab sits from the strip's start, for its outline's
+  // foot to reach back to the sidebar (.tab-outline in styles.css)
+  const [reach, setReach] = useState(0);
+  useLayoutEffect(() => {
+    const box = strip.current;
+    if (!box) return;
+    const measure = () => {
+      const tab = box.querySelector<HTMLElement>("[role=tab][aria-selected=true]");
+      setReach(tab ? Math.max(0, Math.round(tab.getBoundingClientRect().left - box.getBoundingClientRect().left)) : 0);
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(box);
+    box.addEventListener("scroll", measure, { passive: true });
+    return () => {
+      watch.disconnect();
+      box.removeEventListener("scroll", measure);
+    };
+  }, [activeId, tasks.length]);
   return (
     <div
       ref={strip}
@@ -269,7 +288,11 @@ export function TaskStrip({
           >
             {/* the sidebar edge's colours carried up its side and round its
                 corner, fading along its top (styles.css, .tab-outline) */}
-            {active && <span aria-hidden className="tab-outline" />}
+            {active && (
+              <span aria-hidden className="tab-outline" style={{ "--reach": `${reach}px` } as CSSProperties}>
+                <span />
+              </span>
+            )}
             <LaneMark state={task.state} unread={task.unread} />
             <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{task.title}</span>
             {task.context && ((measuredContext(task.context) && task.context.fraction >= RING_FROM) || task.context.summarised) && (
