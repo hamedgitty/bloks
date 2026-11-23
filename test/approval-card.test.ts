@@ -69,6 +69,17 @@ test("an ACP title gives up the code in its backticks", () => {
   assert.deepEqual(readApproval(card("edit", "Edit `src/a.ts`"), ada).detail, { kind: "path", path: "src/a.ts" });
 });
 
+test("CommandLine and Path JSON fields render as command and path details", () => {
+  // Keeps PascalCase tool payloads readable and preserves risky-command warnings.
+  const cmd = readApproval(card("execute", '{"CommandLine":"rm -rf build"}'), ada);
+  assert.deepEqual(cmd.detail, { kind: "command", text: "rm -rf build" });
+  assert.ok(cmd.risk);
+  assert.deepEqual(cmd.scopes, []);
+
+  const edit = readApproval(card("edit", '{"Path":"/tmp/a.ts"}'), ada);
+  assert.deepEqual(edit.detail, { kind: "path", path: "/tmp/a.ts" });
+});
+
 test("a reason is shown as a sentence, and a summary that is only the tool's name as nothing", () => {
   const reason = readApproval(card("shell", "Run the test suite to check the change."), ada);
   assert.deepEqual(reason.detail, { kind: "text", text: "Run the test suite to check the change." });
