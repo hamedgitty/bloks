@@ -30,7 +30,6 @@ import {
   isRoomKey,
   openDoc,
   parseDock,
-  pickPanel,
   placeIn,
   roomKey,
   selectDoc,
@@ -77,16 +76,23 @@ describe("open, shown and hidden", () => {
     s = toggleDock(s, a, ["docs", "computer"], 4);
     assert.equal(placeIn(s, a).open, false);
     // the browser went away (a phone looking at the Mac, say): it opens on
-    // something offered instead
+    // the tab still offered instead
     s = showPanel(hideDock(s, a, 5), a, "browser", 6);
     s = toggleDock(hideDock(s, a, 7), a, ["docs", "computer"], 8);
     assert.equal(placeIn(s, a).panel, "computer");
   });
 
-  test("with nothing said, documents open first, then the first panel offered", () => {
-    assert.equal(pickPanel(placeIn(openDoc(empty(), a, doc("x.md")), a), ["docs", "browser"]), "docs");
-    assert.equal(pickPanel(placeIn(empty(), a), ["docs", "browser", "terminal"]), "browser");
-    assert.equal(pickPanel(placeIn(empty(), a), []), null);
+  test("with no tab, the toggle opens the right pane on its list and opens nothing for the person", () => {
+    let s = toggleDock(empty(), a, ["docs", "browser", "terminal"], 1);
+    assert.equal(placeIn(s, a).open, true);
+    assert.equal(placeIn(s, a).panel, null);
+    assert.deepEqual(placeIn(s, a).tabs, []);
+    // a tab moved to the bottom stays there; the right still opens on its list
+    s = moveTab(showPanel(hideDock(s, a, 2), a, "terminal", 3), a, "terminal", "bottom", 4);
+    s = toggleDock(hideDock(s, a, 5), a, ["docs", "terminal"], 6);
+    assert.equal(placeIn(s, a).open, true);
+    assert.equal(placeIn(s, a).panel, null);
+    assert.equal(paneOf(placeIn(s, a), "bottom").panel, "terminal");
   });
 
   test("a panel that goes away closes the dock rather than showing another", () => {
@@ -258,7 +264,7 @@ describe("panels as tabs", () => {
     assert.deepEqual(placeIn(s, a).tabs, ["changes", "terminal", "docs"]);
   });
 
-  test("closing the tab in front brings its neighbour forward, and the last one hides the dock", () => {
+  test("closing the tab in front brings its neighbour forward, and the last one leaves the list", () => {
     let s = showPanel(showPanel(showPanel(empty(), a, "docs", 1), a, "changes", 2), a, "terminal", 3);
     s = showPanel(s, a, "changes", 4);
     s = closeTab(s, a, "changes", 5);
@@ -268,7 +274,7 @@ describe("panels as tabs", () => {
     s = closeTab(s, a, "docs", 6);
     assert.equal(placeIn(s, a).panel, "terminal", "a tab behind closes without moving the one in front");
     s = closeTab(s, a, "terminal", 7);
-    assert.equal(placeIn(s, a).open, false);
+    assert.equal(placeIn(s, a).open, true, "the right pane stays open on its list");
     assert.equal(placeIn(s, a).panel, null);
     assert.equal(closeTab(s, a, "browser", 8), s, "a tab not open is no change");
   });

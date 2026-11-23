@@ -57,7 +57,7 @@ import {
   type ExtensionInfo,
 } from "../src/lib/extensions.ts";
 import { leavesExtensionFrame } from "../electron/navigation.mjs";
-import { DOCK_PANELS, chatKey, dock, parseDock, pickPanel, placeIn } from "../src/lib/dock.ts";
+import { DOCK_PANELS, chatKey, dock, parseDock, placeIn, toggleDock } from "../src/lib/dock.ts";
 import { extensionPanelsNow, openPanel, prunePanels, showExtensionPanel } from "../src/lib/extensions.ts";
 
 const files = (...names: string[]) => new Set(names);
@@ -432,8 +432,9 @@ describe("their panels, in the side dock", () => {
     assert.equal(DOCK_PANELS.at(-1), "extensions");
     const saved = parseDock(JSON.stringify({ [chatKey("a1", "t1")]: { open: true, panel: "extensions", docs: [], doc: null, at: 1 } }), "480");
     assert.deepEqual(placeIn(saved, chatKey("a1", "t1")), { open: true, panel: "extensions", tabs: ["extensions"], docs: [], doc: null, at: 1 });
-    // never opened on its own: with nothing said, the dock picks another
-    assert.equal(pickPanel({ open: false, panel: null, tabs: [], docs: [], doc: null, at: 0 }, ["browser", "extensions"]), "browser");
+    // never opened on its own: with nothing said, the dock opens on its list
+    const opened = toggleDock({ places: {}, width: 480 }, chatKey("a1", "t2"), ["browser", "extensions"], 1);
+    assert.equal(placeIn(opened, chatKey("a1", "t2")).panel, null);
   });
 
   test("opening an extension's panel opens the dock of the conversation on screen on it, and a gone one leaves", () => {

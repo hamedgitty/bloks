@@ -30,7 +30,7 @@ import { IncidentNotice } from "@/components/chat/IncidentCard";
 import { CarryOn } from "@/components/CarryOn";
 import { AgentAvatar } from "./Avatar";
 import { RoutinesDialog } from "./RoutinesDialog";
-import { GroupCallButton } from "./Voice";
+import { GroupCallOverlay } from "./Voice";
 import { splitWaiting } from "@/lib/transcript";
 import { useHistoryPaging } from "@/lib/useHistoryPaging";
 import { ArtifactCard } from "./Artifacts";
@@ -58,7 +58,7 @@ import { Button } from "@/components/ui/button";
 import { BrowseFolderButton } from "@/components/ui/browse-folder";
 import { ForumLens } from "./ForumLens";
 import { MessageComponent } from "./Gallery";
-import { MoreHorizontal } from "@/components/icons";
+import { Phone } from "@/components/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1270,10 +1270,46 @@ export function RoomView({ blok }: { blok: Blok }) {
 
   const titleSlot = useTitlebarSlot();
   const [dockHead, setDockHead] = useState<HTMLDivElement | null>(null);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [calling, setCalling] = useState(false);
+  const voiced = answering.filter((m) => m.voice).length;
+  const folderShown = blok.pinnedCwd ?? blok.cwd;
+  const roomMenu = (
+    <RoomMenu
+      blok={blok}
+      knocking={knocking}
+      shareLabel={blok.sharing ? t("roomView.sharedWith", { count: roomPeople.length }) : t("roomView.shareRoom")}
+      onShare={() => setSharingOpen(true)}
+      folderLabel={folderShown ? t("roomView.sharedFolderIs", { path: folderShown }) : t("roomView.sharedWorkingFolder")}
+      onFolder={() => setFolderOpen(true)}
+      callLabel={
+        voiced === 0
+          ? undefined
+          : voiced === answering.length
+            ? t("voice.call", { name: blok.name })
+            : t("voice.callSomeInText", { name: blok.name, count: answering.length - voiced })
+      }
+      onCall={() => setCalling(true)}
+      onRename={() => setRenaming(true)}
+      onAgents={() => setEditingAgents(true)}
+      onFreshStart={freshStart}
+      justSaved={justSaved}
+      onRoutines={() => setShowRoutines(true)}
+      onSave={saveToLibrary}
+      onExport={exportManifest}
+      answers={answers}
+      onAnswers={setAnswers}
+      members={answering}
+      lead={lead}
+      onLead={makeLead}
+      onClose={() => setClosing(true)}
+      onNewTopic={powers.open ? () => setTopicDialog({}) : undefined}
+    />
+  );
   // the room's name and who answers in it, up in the top row (`up`) or in
   // its own header
   const roomIdentity = (up: boolean) => (
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="relative flex min-w-0 items-center gap-2.5">
           <span className={cn("flex shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground", up ? "size-6" : "size-7")}>
             <Users size={15} />
           </span>
@@ -1281,7 +1317,10 @@ export function RoomView({ blok }: { blok: Blok }) {
             {renaming ? (
               <RoomRename name={blok.name} onDone={rename} className="-ml-1.5 block w-[min(360px,55vw)] text-ui font-semibold" />
             ) : (
-              <span className={cn("block truncate text-ui font-semibold text-foreground", up && "shrink-0")}>{blok.name}</span>
+              <span className="flex min-w-0 items-center gap-0.5">
+                <span className={cn("block truncate text-ui font-semibold text-foreground", up && "shrink-0")}>{blok.name}</span>
+                {roomMenu}
+              </span>
             )}
             {/* the lead first, crowned, so a phone without the faces on
                 the right still says who has the final call */}
@@ -1294,28 +1333,31 @@ export function RoomView({ blok }: { blok: Blok }) {
               </span>
             </span>
           </span>
+          {folderOpen && <RoomFolderPanel blok={blok} onClose={() => setFolderOpen(false)} />}
+          {calling && <GroupCallOverlay blok={blok} members={answering} onClose={() => setCalling(false)} />}
         </div>
   );
+  // Two buttons, as in a chat (ChatView.tsx): how to read the room, and
+  // the side panel. Who is here shows as their faces; sharing, the folder,
+  // a call and changing or tidying the room are the menu after its name.
   const roomActions = (
         <div className="flex shrink-0 items-center gap-1.5">
           <RoomPresence members={answering} lead={lead} working={working} answers={answers} />
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => setSharingOpen(true)}
-            className={cn("relative", blok.sharing && "text-foreground")}
-            title={blok.sharing ? t("roomView.sharedWith", { count: roomPeople.length }) : t("roomView.shareRoom")}
-            aria-label={blok.sharing ? t("roomView.sharedWith", { count: roomPeople.length }) : t("roomView.shareRoom")}
+            onClick={() => setLensAnd(lens === "stream" ? "forum" : "stream")}
+            className={cn(lens === "forum" && "bg-accent text-foreground")}
+            title={
+              lens === "stream"
+                ? t("roomView.viewAsTopics")
+                : t("roomView.viewInOrder")
+            }
+            aria-label={lens === "stream" ? t("roomView.viewAsTopics") : t("roomView.viewInOrder")}
+            aria-pressed={lens === "forum"}
           >
-            <UserPlus size={16} />
-            {knocking > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-brand-ink px-1 text-micro font-semibold leading-4 text-brand-foreground">
-                {knocking}
-              </span>
-            )}
+            {lens === "stream" ? <MessagesSquare size={16} /> : <Rows3 size={16} />}
           </Button>
-          <RoomFolderButton blok={blok} />
-          <GroupCallButton blok={blok} members={answering} />
           <Button
             variant="ghost"
             size="icon"
@@ -1327,42 +1369,6 @@ export function RoomView({ blok }: { blok: Blok }) {
           >
             <PanelRight size={16} />
           </Button>
-          {/* What you reach for while reading stays in the header: people,
-              the folder, a call and how to read it. Changing the room (its
-              name, its agents, a fresh start) and tidying it (routines,
-              saving or exporting the team, lead-only, closing it) is a
-              menu, at every width, so the header never becomes a toolbar
-              of look-alike icons. */}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setLensAnd(lens === "stream" ? "forum" : "stream")}
-            className={cn(lens === "forum" && "bg-accent text-foreground")}
-            title={
-              lens === "stream"
-                ? t("roomView.viewAsTopics")
-                : t("roomView.viewInOrder")
-            }
-          >
-            {lens === "stream" ? <MessagesSquare size={16} /> : <Rows3 size={16} />}
-          </Button>
-          <RoomMenu
-            blok={blok}
-            onRename={() => setRenaming(true)}
-            onAgents={() => setEditingAgents(true)}
-            onFreshStart={freshStart}
-            justSaved={justSaved}
-            onRoutines={() => setShowRoutines(true)}
-            onSave={saveToLibrary}
-            onExport={exportManifest}
-            answers={answers}
-            onAnswers={setAnswers}
-            members={answering}
-            lead={lead}
-            onLead={makeLead}
-            onClose={() => setClosing(true)}
-            onNewTopic={powers.open ? () => setTopicDialog({}) : undefined}
-          />
         </div>
   );
 
@@ -1636,8 +1642,8 @@ export function RoomView({ blok }: { blok: Blok }) {
 
 /** The room's shared desk: one folder every member's room turns run in.
  * Settable until the first turn pins it; a chip afterwards. */
-function RoomFolderButton({ blok }: { blok: Blok }) {
-  const [open, setOpen] = useState(false);
+function RoomFolderPanel({ blok, onClose }: { blok: Blok; onClose: () => void }) {
+  const setOpen = (open: boolean) => !open && onClose();
   const [draft, setDraft] = useState(blok.cwd ?? "");
   const [error, setError] = useState<string | null>(null);
   const pinned = blok.pinnedCwd !== undefined;
@@ -1654,18 +1660,27 @@ function RoomFolderButton({ blok }: { blok: Blok }) {
       .catch((e: Error) => setError(e.message));
   };
 
+  // opened from the room's menu, under its name; Escape or a click
+  // outside puts it away
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: PointerEvent) => !box.current?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("pointerdown", away);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", away);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
   return (
-    <div className="relative">
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={() => setOpen(!open)}
-        title={shown ? t("roomView.sharedFolderIs", { path: shown }) : t("roomView.sharedWorkingFolder")}
+      <div
+        ref={box}
+        role="dialog"
+        aria-label={t("roomView.sharedWorkingFolder")}
+        title={shown ? t("roomView.sharedFolderIs", { path: shown }) : undefined}
+        className="absolute left-0 top-full z-30 mt-2 w-[320px] max-w-[92vw] animate-pop-in rounded-2xl border bg-popover p-3.5 shadow-xl shadow-(color:--shadow-color)"
       >
-        <FolderOpen size={16} className={shown ? "text-brand-ink" : undefined} />
-      </Button>
-      {open && (
-        <div className="absolute right-0 top-11 z-30 w-[320px] max-w-[92vw] animate-pop-in rounded-2xl border bg-popover p-3.5 shadow-xl shadow-(color:--shadow-color)">
           <div className="text-body font-semibold text-foreground">{t("roomView.sharedWorkingFolder")}</div>
           {pinned ? (
             <>
@@ -1702,14 +1717,14 @@ function RoomFolderButton({ blok }: { blok: Blok }) {
               </div>
             </>
           )}
-        </div>
-      )}
-    </div>
+      </div>
   );
 }
 
 /**
- * The room's management actions, at every width.
+ * The room's actions, from the small button after its name, at every
+ * width: sharing it, its folder and a call first, since those are what
+ * the header held before, then changing the room and tidying it.
  *
  * Changing the room itself comes first: its name, who is in it, and a
  * fresh start with the same team, since a room is one conversation and
@@ -1717,6 +1732,13 @@ function RoomFolderButton({ blok }: { blok: Blok }) {
  */
 function RoomMenu({
   blok,
+  knocking,
+  shareLabel,
+  onShare,
+  folderLabel,
+  onFolder,
+  callLabel,
+  onCall,
   onRename,
   onAgents,
   onFreshStart,
@@ -1733,6 +1755,15 @@ function RoomMenu({
   onNewTopic,
 }: {
   blok: Blok;
+  /** People asking to join, marked on the button and on Share. */
+  knocking: number;
+  shareLabel: string;
+  onShare: () => void;
+  folderLabel: string;
+  onFolder: () => void;
+  /** Said only once anyone in the room can speak. */
+  callLabel?: string;
+  onCall: () => void;
   /** Opens a new topic, for whoever may (server/room-topics.ts). */
   onNewTopic?: () => void;
   /** Turns the name in the header into a field. */
@@ -1759,13 +1790,18 @@ function RoomMenu({
   const renameNext = useRef(false);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" title={t("roomView.more")} aria-label={t("roomView.moreRoomActions")}>
-          <MoreHorizontal size={16} />
-        </Button>
+      <DropdownMenuTrigger
+        title={t("roomView.more")}
+        aria-label={knocking > 0 ? `${t("roomView.moreRoomActions")}, ${shareLabel}` : t("roomView.moreRoomActions")}
+        className="relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground"
+      >
+        <ChevronDown size={15} />
+        {knocking > 0 && (
+          <span aria-hidden className="absolute right-0.5 top-0.5 size-2 rounded-full bg-brand-ink ring-2 ring-background" />
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        align="end"
+        align="start"
         className="min-w-[210px]"
         onCloseAutoFocus={(e) => {
           if (!renameNext.current) return;
@@ -1774,6 +1810,24 @@ function RoomMenu({
           onRename();
         }}
       >
+        <DropdownMenuItem onClick={onShare}>
+          <UserPlus size={15} className={blok.sharing ? "text-foreground" : undefined} />
+          <span className="min-w-0 flex-1 truncate">{shareLabel}</span>
+          {knocking > 0 && (
+            <span className="flex min-w-4 items-center justify-center rounded-full bg-brand-ink px-1 text-micro font-semibold leading-4 text-brand-foreground">{knocking}</span>
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onFolder}>
+          <FolderOpen size={15} className={blok.cwd || blok.pinnedCwd ? "text-brand-ink" : undefined} />
+          <span className="min-w-0 flex-1 truncate">{folderLabel}</span>
+        </DropdownMenuItem>
+        {callLabel && (
+          <DropdownMenuItem onClick={onCall}>
+            <Phone size={15} />
+            <span className="min-w-0 flex-1 truncate">{callLabel}</span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => (renameNext.current = true)}>
           <Pencil size={15} />
           {t("roomView.rename")}

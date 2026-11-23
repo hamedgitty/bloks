@@ -22,7 +22,7 @@ import { Composer } from "./Composer";
 import { useTerminalDock } from "./terminal/TerminalDock";
 import { showTerminalTab, useTerminalTabs } from "./Terminal";
 import { act as browserAct, BrowsingOnMac, DockedBrowser, showPage, useBrowserReveal, useBrowserState, useBrowserWhere, useTabScope } from "./browser/BrowserPanel";
-import { Activity, Bot as BotIcon, FileDiff, Folder, Globe, Hourglass, PanelRight } from "@/components/icons";
+import { Activity, Bot as BotIcon, Eraser, FileDiff, Folder, Globe, Hourglass, PanelRight, Phone, Plus, Settings } from "@/components/icons";
 import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
@@ -35,7 +35,7 @@ import { chatKey, dock, DOCK_SIDES, paneOf, placeIn, shownAnywhere, sideOf, useD
 import { browserStatus, computerStatus, currentTurn, strongest, tabsInScope, turnComputerUse } from "@/lib/dockActivity";
 import { tabLabel } from "@/lib/appBrowser";
 import { dockChord, expandChord, panelChord } from "@/lib/dockKeys";
-import { changesRound, totalsLabel } from "@/lib/laneChanges";
+import { changesRound, changeTotals, totalsLabel } from "@/lib/laneChanges";
 import { moveTerminal } from "@/lib/terminalLayout";
 import { stepTab, terminalChord } from "@/lib/terminalTabs";
 import { closeRefusal, conversationChord, keysOwner, keysWhere, type ConversationChord } from "@/lib/conversationKeys";
@@ -50,7 +50,8 @@ import { dayLine, timeSaidBelow } from "@/lib/when";
 import { MAX_TASKS, TaskStrip } from "./TaskStrip";
 import { GoalDialog } from "./Goal";
 import { AfterAgentLink, AgentExchangeDialog, AgentExchangeRow } from "./AgentExchange";
-import { CallButton } from "./Voice";
+import { CallOverlay } from "./Voice";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ArtifactCard } from "./Artifacts";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretCard } from "./SecretCard";
@@ -756,6 +757,8 @@ export function ChatView({ bot }: { bot: Bot }) {
   // a little air, and never less than the menu button a narrow window puts
   // on the left.
   const headerSide = Math.max(actionsWidth + 24, 72);
+  // a call with a voiced agent, started from the menu after its name
+  const [calling, setCalling] = useState(false);
   const focusBox = () =>
     requestAnimationFrame(() => {
       // the composer's field is the one drawn over its skill marks
@@ -914,6 +917,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       label: t("dock.changes.label"),
       icon: <FileDiff size={15} />,
       count: totalsLabel(laneChanges ?? []),
+      delta: laneChanges?.length ? changeTotals(laneChanges) : undefined,
       keys: keysFor("dockChanges", platformOf(), Boolean(window.bloks))[0],
       popOut: panelWindow("changes"),
       render: (shown) => <ChangesPanel placeKey={dockKey} threadId={laneId} files={laneChanges} shown={shown} />,
@@ -926,6 +930,8 @@ export function ChatView({ bot }: { bot: Bot }) {
             detail: browserWhere.home === "server" ? t("dock.browser.onServer") : t("dock.browser.here"),
             icon: <Globe size={15} />,
             keys: keysFor("dockBrowser", platformOf(), Boolean(window.bloks))[0],
+            // on while it has a page open here or an agent is at it
+            count: someoneBrowsing || tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).length ? t("dock.running") : undefined,
             status: browserStatus(browserState),
             // each page a tab of its own in the dock's strip
             items: tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).map((tab) => ({
@@ -946,6 +952,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       label: t("dock.terminal.label"),
       icon: <SquareTerminal size={15} />,
       keys: keysFor("dockTerminal", platformOf(), Boolean(window.bloks))[0],
+      count: terminalTabs?.tabs.length ? t("dock.tasks.count", { count: terminalTabs.tabs.length }) : undefined,
       keepAlive: true,
       // each shell a tab of its own in the dock's strip, an agent's own
       // wearing its badge
@@ -1278,15 +1285,17 @@ export function ChatView({ bot }: { bot: Bot }) {
   };
 
   // who you are talking to, up in the window's top row (`up`) or in the
-  // middle of the conversation's own header
+  // middle of the conversation's own header, with a small menu after the
+  // name for what is done to the conversation rather than in it, so the
+  // header keeps only what is reached for while reading
   const identityButton = (up: boolean) => (
+    <div
+      className={cn("flex min-w-0 items-center gap-0.5", !up && "absolute left-1/2 -translate-x-1/2")}
+      style={up ? undefined : { maxWidth: `calc(100% - ${headerSide * 2}px)` }}
+    >
         <button
           onClick={() => dispatch({ type: "toggleSettings" })}
-          className={cn(
-            "flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 transition-colors duration-150 hover:bg-accent",
-            !up && "absolute left-1/2 -translate-x-1/2",
-          )}
-          style={up ? undefined : { maxWidth: `calc(100% - ${headerSide * 2}px)` }}
+          className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 transition-colors duration-150 hover:bg-accent"
           title={t("chatView.agentSettings")}
         >
           <AgentAvatar bot={bot} size={up ? 24 : 28} />
@@ -1309,11 +1318,54 @@ export function ChatView({ bot }: { bot: Bot }) {
             )}
           </span>
         </button>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger
+            aria-label={t("chatView.options", { name: bot.name })}
+            title={t("chatView.options", { name: bot.name })}
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          >
+            <ChevronDown size={15} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[220px]">
+            <DropdownMenuItem onSelect={() => dispatch({ type: "toggleSettings" })}>
+              <Settings size={15} />
+              {t("chatView.agentSettings")}
+            </DropdownMenuItem>
+            {bot.voice && (
+              <DropdownMenuItem onSelect={() => setCalling(true)}>
+                <Phone size={15} />
+                {t("voice.call", { name: bot.name })}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => dispatch({ type: "newTask", botId: bot.id })}>
+              <Plus size={15} />
+              {t("chatView.newConversation")}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                const taskId = bot.activeTaskId ?? bot.threadId;
+                void confirm({
+                  title: t("chatView.clearThis"),
+                  body: t("chatView.messagesDeleted"),
+                  confirmLabel: t("common.clear"),
+                  destructive: true,
+                }).then((yes) => yes && dispatch({ type: "clearTask", botId: bot.id, taskId }));
+              }}
+              className="text-destructive focus:text-destructive"
+            >
+              <Eraser size={15} />
+              {t("chatView.clearConversation")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+    </div>
   );
+  // Two buttons, as the desktop apps that keep panes beside a chat have
+  // it: meeting notes, and the side panel, which holds everything else
+  // (the terminal, the browser, the changes) as tabs.
   const headerActions = (
         <div ref={actionsRef} className={cn("flex shrink-0 items-center gap-1.5", titleSlot ? "pr-2" : "ml-auto")}>
-          {/* the model is picked where you type, in the composer's footer */}
-          <CallButton bot={bot} />
           {/* meeting notes need something to hear them (src/lib/hearing.ts),
               and a hosted workspace refuses them */}
           {meetingNotesHere(ears.kind, state.config?.hosted?.on, macApp) && (
@@ -1330,17 +1382,6 @@ export function ChatView({ bot }: { bot: Bot }) {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => toggleTerminalRef.current()}
-            className={cn(terminalShown.current && "bg-accent text-foreground")}
-            title={`${t("chatView.terminalIn", { name: bot.name })}  ${keysFor("terminalToggle", platformOf())[0]}`}
-            aria-label={t("chatView.terminal")}
-            aria-pressed={terminalShown.current}
-          >
-            <SquareTerminal size={17} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
             onClick={() => toggleDockRef.current()}
             className={cn("relative", dockPlace.open && "bg-accent text-foreground")}
             title={`${someoneBrowsing && browserState?.control.by === "agent" ? t("chatView.browsing", { name: browserState.control.name }) : t("dock.toggle")}  ${keysFor("dockToggle", platformOf())[0]}`}
@@ -1352,6 +1393,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-brand" />
             )}
           </Button>
+          {calling && <CallOverlay bot={bot} onClose={() => setCalling(false)} />}
         </div>
   );
 

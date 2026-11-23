@@ -216,9 +216,11 @@ export function moveTab(state: DockState, key: string, panel: DockPanel, side: D
   );
 }
 
-/** A tab closed: the one beside it comes forward if it was in front, and
- * closing the last tab hides the dock. What the panel kept (documents,
- * shells) is not this tab's to end. */
+/** A tab closed: the one beside it comes forward if it was in front.
+ * Closing the right pane's last tab leaves it open on its list of what it
+ * can show (SideDock.tsx), as an empty pane does when it is first opened;
+ * another side's pane closes with its last tab. What the panel kept
+ * (documents, shells) is not this tab's to end. */
 export function closeTab(state: DockState, key: string, panel: DockPanel, now = Date.now()): DockState {
   const place = placeIn(state, key);
   const side = sideOf(place, panel);
@@ -230,7 +232,7 @@ export function closeTab(state: DockState, key: string, panel: DockPanel, now = 
   if (pane.panel !== panel) return withPlace(state, key, (p) => ({ ...p, tabs }), now);
   const rest = onSide.filter((p) => p !== panel);
   const next = rest[Math.min(Math.max(at, 0), rest.length - 1)] ?? null;
-  return withPlace(state, key, (p) => withPane({ ...p, tabs }, side, { open: pane.open && next !== null, panel: next }), now);
+  return withPlace(state, key, (p) => withPane({ ...p, tabs }, side, { open: pane.open && (next !== null || side === "right"), panel: next }), now);
 }
 
 /** Closed, with everything in it kept for when it opens again. */
@@ -240,22 +242,18 @@ export function hideDock(state: DockState, key: string, now = Date.now(), side: 
   return withPlace(state, key, (p) => withPane(p, side, { ...pane, open: false }), now);
 }
 
-/** The header's toggle: closed opens on the panel last shown (or the
- * first offered), open closes. */
+/** The header's toggle, for the right pane: the side a panel opens on
+ * unless the person moved one elsewhere, since it keeps the conversation
+ * where it was read. Closed, it opens on the tab last shown there, or the
+ * one opened last, if still offered; with no tab there it opens on its
+ * list of what it can show, and nothing is opened for the person. Open,
+ * it closes. */
 export function toggleDock(state: DockState, key: string, offered: readonly DockPanel[], now = Date.now()): DockState {
   const place = placeIn(state, key);
   if (place.open) return hideDock(state, key, now);
-  const panel = place.panel && offered.includes(place.panel) ? place.panel : pickPanel(place, offered);
-  return panel ? showPanel(state, key, panel, now) : state;
-}
-
-/** What to show when nothing says: an open tab first, then open
- * documents, then the first panel offered. */
-export function pickPanel(place: DockPlace, offered: readonly DockPanel[]): DockPanel | null {
-  const tab = [...place.tabs].reverse().find((p) => offered.includes(p));
-  if (tab) return tab;
-  if (place.docs.length && offered.includes("docs")) return "docs";
-  return DOCK_PANELS.find((p) => p !== "docs" && offered.includes(p)) ?? (offered.includes("docs") ? "docs" : null);
+  const onRight = tabsOn(place, "right").filter((p) => offered.includes(p));
+  const panel = place.panel && onRight.includes(place.panel) ? place.panel : (onRight[onRight.length - 1] ?? null);
+  return withPlace(state, key, (p) => withPane(p, "right", { open: true, panel }), now);
 }
 
 /** A panel that went away (a terminal moved out of the dock): if it was

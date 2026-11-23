@@ -3,19 +3,25 @@
 // always was; a tab moved to the left, the top or the bottom opens a pane
 // there, with a strip of its own.
 //
-// Each pane's top is a strip of tabs, one for each panel open on that
-// side, the shown one pressed, each with its own ×. A panel that holds
-// several things of its own (terminal shells, browser pages) shows each as
-// a tab of its own in the strip, flat beside the rest; selecting one
-// brings that panel forward on it, and its × closes that shell or page.
-// After the tabs: a + that lists every kind of panel this conversation
-// offers, with what each holds and its key, and adds it to this pane; a
-// ⋯ for the tab in front (move it to another side, expand, open it in a
-// window of its own); expand; and an × that hides the pane and keeps what
-// is in it. On a tab a dot says what its panel is doing
+// Each pane's top is one quiet row: a + on the far left that lists every
+// kind of panel this conversation offers, with what each holds and its
+// key, and adds it to this pane; then a strip of tabs, one for each panel
+// open on that side, the shown one pressed, each with its own ×; and on
+// the far right the pane's own icon, which hides it and keeps what is in
+// it. A panel that holds several things of its own (terminal shells,
+// browser pages) shows each as a tab of its own in the strip, flat beside
+// the rest; selecting one brings that panel forward on it, and its ×
+// closes that shell or page. A tab's own menu (right click, or Shift+F10
+// on it) moves it to another side, expands the pane, or opens it in a
+// window of its own. On a tab a dot says what its panel is doing
 // (src/lib/dockActivity.ts): blue while an agent works in it, orange while
 // it waits on the person, purple while another person is at it; one on a
 // panel that is not open marks the + instead.
+//
+// The right pane open with no tab in it (opened from the header, or its
+// last tab closed) lists what it can show, one row each with what it
+// holds now and its key, in the middle of the pane: nothing is opened for
+// the person until they pick.
 //
 // One edge on a pane's inner side sizes it, by drag or by the arrow keys:
 // the right and left panes' width, the top and bottom panes' height, each
@@ -33,7 +39,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useFadeScroll } from "@/lib/fadeScroll";
 import { createPortal } from "react-dom";
-import { AppWindow, Maximize2, Minimize2, MoreHorizontal, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
+import { AppWindow, Maximize2, Minimize2, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import {
   DropdownMenu,
@@ -90,9 +96,11 @@ export interface DockPane {
   icon: ReactNode;
   /** A second line for the name: where the browser runs, say. */
   detail?: string;
-  /** What it holds now, beside its name in the + menu: "+12 −3", "2
-   * running". */
+  /** What it holds now, beside its name in the + menu and the list: "3",
+   * "2 running". */
   count?: string;
+  /** Lines added and removed, drawn green and red in place of `count`. */
+  delta?: { added: number; removed: number };
   /** Its key, as the + menu writes it (src/lib/shortcuts.ts). */
   keys?: string;
   /** What is happening in it, as the dot under its icon. Work is not
@@ -138,6 +146,19 @@ const SIDE_WORDS: Record<DockSide, MessageKey> = {
   bottom: "dock.move.bottom",
 };
 
+/** What a panel holds now, beside its name: lines added and removed in
+ * their colours, or its count. */
+function Holds({ p }: { p: DockPane }) {
+  if (p.delta)
+    return (
+      <span className="flex shrink-0 gap-1 text-small tabular-nums">
+        <span className="text-success">+{p.delta.added}</span>
+        <span className="text-destructive">{"\u2212"}{p.delta.removed}</span>
+      </span>
+    );
+  return p.count ? <span className="shrink-0 text-small tabular-nums text-muted-foreground">{p.count}</span> : null;
+}
+
 const ROUND_BUTTON =
   "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
@@ -169,6 +190,11 @@ export function SideDock({
   const ordered = DOCK_PANELS.map((id) => panes.find((p) => p.id === id)).filter((p): p is DockPane => Boolean(p));
   const pane = paneOf(place, side);
   const shown = pane.open && pane.panel && sideOf(place, pane.panel) === side && ordered.some((p) => p.id === pane.panel) ? pane.panel : null;
+  // the right pane shows while open, on its list when no tab is in front;
+  // another side's only with a tab in it
+  const visible = side === "right" ? pane.open : Boolean(shown);
+  // the tab whose own menu is open, by its key in the strip
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const [room, setRoom] = useState(0);
   const [dragging, setDragging] = useState<number | null>(null);
   const [holder, setHolder] = useState<HTMLElement | null>(null);
@@ -232,7 +258,7 @@ export function SideDock({
   const fade = useFadeScroll(strip, frontKey);
   // up in the window's top row while the pane shows beside the
   // conversation; at its own top when it covers it or there is no top row
-  const up = Boolean(headSlot && shown && !covering && side === "right");
+  const up = Boolean(headSlot && visible && !covering && side === "right");
   useLayoutEffect(() => {
     if (!headSlot) return;
     // the slot takes the pane's width and its edge's, so the tabs sit
@@ -244,7 +270,49 @@ export function SideDock({
     const status = p.status && !(p.status === "working" && isFront) ? STATUS[p.status] : null;
     const said = status ? t("dock.status.labelled", { panel: label, status: t(status.words) }) : label;
     return (
-      <div key={key} className="group relative flex shrink-0 items-center">
+      <div
+        key={key}
+        className="group relative flex shrink-0 items-center"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenuFor(key);
+        }}
+      >
+        <DropdownMenu modal={false} open={menuFor === key} onOpenChange={(open) => !open && setMenuFor(null)}>
+          <DropdownMenuTrigger asChild>
+            <span aria-hidden tabIndex={-1} className="pointer-events-none absolute inset-0" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[220px]">
+            {canMove && (
+              <>
+                <DropdownMenuLabel>{t("dock.moveTo")}</DropdownMenuLabel>
+                {(["left", "right", "top", "bottom"] as const).map((to) => (
+                  <DropdownMenuItem key={to} data-dock-move={to} disabled={to === side} onSelect={() => dock.move(placeKey, p.id, to)}>
+                    {SIDE_ICON[to]}
+                    <span className="flex-1">{t(SIDE_WORDS[to])}</span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+              </>
+            )}
+            <DropdownMenuItem onSelect={() => setExpanded(!expanded)}>
+              {expanded ? <Minimize2 /> : <Maximize2 />}
+              <span className="flex-1">{expanded ? t("dock.restore") : t("dock.expand")}</span>
+              <kbd className="font-sans text-caption text-muted-foreground">{keysFor("dockExpand", platformOf())[0]}</kbd>
+            </DropdownMenuItem>
+            {p.popOut && (
+              <DropdownMenuItem onSelect={() => p.popOut?.()}>
+                <AppWindow />
+                <span className="flex-1">{t("dock.newWindow")}</span>
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onClose}>
+              <X />
+              <span className="flex-1">{t("dock.closeTab", { name: label })}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           type="button"
           role="tab"
@@ -287,8 +355,35 @@ export function SideDock({
     );
   };
 
+  const plus = (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger aria-label={t("dock.add")} title={t("dock.add")} className={ROUND_BUTTON}>
+        <Plus size={16} />
+        {behind && (
+          <span
+            aria-hidden
+            data-dock-status={behind}
+            className={cn("absolute bottom-0.5 left-1/2 size-1.5 -translate-x-1/2 rounded-full", STATUS[behind].dot, STATUS[behind].pulse && "motion-safe:animate-pulse")}
+          />
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[240px]">
+        {ordered.map((p) => (
+          <DropdownMenuItem key={p.id} data-dock-kind={p.id} onSelect={() => add(p)}>
+            {p.icon}
+            <span className="truncate">{p.label}</span>
+            <Holds p={p} />
+            <span className="flex-1" />
+            {p.status && p.status !== "working" && <span aria-hidden className={cn("size-1.5 rounded-full", STATUS[p.status].dot)} />}
+            {p.keys && <kbd className="font-sans text-caption text-muted-foreground">{p.keys}</kbd>}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
   const head = (
-    <div className={cn("flex shrink-0 items-center gap-0.5 px-1.5", up ? "h-full border-l bg-card" : "h-[38px] border-b")}>
+    <div className={cn("flex shrink-0 items-center gap-1 px-1.5", up ? "h-full border-l bg-card" : "h-[38px] border-b")}>
+      {plus}
       <div
         ref={strip}
         style={fade}
@@ -316,73 +411,51 @@ export function SideDock({
             : [tab(p.id, p, p.label, p.icon, p.id === shown, () => pick(p.id), () => dock.closeTab(placeKey, p.id))],
         )}
       </div>
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger aria-label={t("dock.add")} title={t("dock.add")} className={ROUND_BUTTON}>
-          <Plus size={16} />
-          {behind && (
-            <span
-              aria-hidden
-              data-dock-status={behind}
-              className={cn("absolute bottom-0.5 left-1/2 size-1.5 -translate-x-1/2 rounded-full", STATUS[behind].dot, STATUS[behind].pulse && "motion-safe:animate-pulse")}
-            />
-          )}
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[240px]">
-          {ordered.map((p) => (
-            <DropdownMenuItem key={p.id} data-dock-kind={p.id} onSelect={() => add(p)}>
-              {p.icon}
-              <span className="flex-1 truncate">{p.label}</span>
-              {p.count && <span className="text-caption tabular-nums text-muted-foreground">{p.count}</span>}
-              {p.status && p.status !== "working" && <span aria-hidden className={cn("size-1.5 rounded-full", STATUS[p.status].dot)} />}
-              {p.keys && <kbd className="font-sans text-caption text-muted-foreground">{p.keys}</kbd>}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {front && (
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger aria-label={t("dock.tabMenu", { name: front.label })} title={t("dock.tabMenu", { name: front.label })} className={ROUND_BUTTON}>
-            <MoreHorizontal size={16} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[220px]">
-            {canMove && (
-              <>
-                <DropdownMenuLabel>{t("dock.moveTo")}</DropdownMenuLabel>
-                {(["left", "right", "top", "bottom"] as const).map((to) => (
-                  <DropdownMenuItem key={to} data-dock-move={to} disabled={to === side} onSelect={() => dock.move(placeKey, front.id, to)}>
-                    {SIDE_ICON[to]}
-                    <span className="flex-1">{t(SIDE_WORDS[to])}</span>
-                  </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator />
-              </>
-            )}
-            <DropdownMenuItem onSelect={() => setExpanded(!expanded)}>
-              {expanded ? <Minimize2 /> : <Maximize2 />}
-              <span className="flex-1">{expanded ? t("dock.restore") : t("dock.expand")}</span>
-              <kbd className="font-sans text-caption text-muted-foreground">{keysFor("dockExpand", platformOf())[0]}</kbd>
-            </DropdownMenuItem>
-            {front.popOut && (
-              <DropdownMenuItem onSelect={() => front.popOut?.()}>
-                <AppWindow />
-                <span className="flex-1">{t("dock.newWindow")}</span>
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-      {(expanded || fits) && (
-        <HeaderButton label={expanded ? t("dock.restore") : t("dock.expand")} pressed={expanded} onClick={() => setExpanded(!expanded)}>
-          {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+      {expanded && (
+        <HeaderButton label={t("dock.restore")} pressed onClick={() => setExpanded(false)}>
+          <Minimize2 size={15} />
         </HeaderButton>
       )}
       <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey, side)}>
-        <X size={16} />
+        {SIDE_ICON[side]}
       </HeaderButton>
     </div>
   );
+  // the right pane with no tab in front: what it can show, one row each
+  const list = (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
+      <div role="list" aria-label={t("dock.panels")} className="flex w-full max-w-[300px] flex-col gap-0.5">
+        {ordered.map((p) => (
+          <div role="listitem" key={p.id}>
+            <button
+              type="button"
+              data-dock-kind={p.id}
+              onClick={() => add(p)}
+              title={p.detail ? `${p.label}, ${p.detail}` : p.label}
+              className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui text-foreground outline-none transition-[background-color,scale] duration-150 ease-out hover:bg-accent active:scale-[0.98]"
+            >
+              <span aria-hidden className="flex shrink-0 [&_svg]:size-4">
+                {p.icon}
+              </span>
+              <span className="truncate">{p.label}</span>
+              <Holds p={p} />
+              {p.status && (
+                <span
+                  aria-hidden
+                  data-dock-status={p.status}
+                  className={cn("size-1.5 shrink-0 rounded-full", STATUS[p.status].dot, STATUS[p.status].pulse && "motion-safe:animate-pulse")}
+                />
+              )}
+              <span className="flex-1" />
+              {p.keys && <kbd className="shrink-0 font-sans text-caption text-muted-foreground">{p.keys}</kbd>}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
   const drawn = ordered.filter((p) => p.id === shown || (p.keepAlive && kept.has(p.id) && sideOf(place, p.id) === side));
-  const edge = shown && !covering && (
+  const edge = visible && !covering && (
     <Edge
       side={side}
       size={size}
@@ -408,7 +481,7 @@ export function SideDock({
         aria-label={t("dock.label")}
         data-side-dock=""
         data-dock-side={side}
-        hidden={!shown}
+        hidden={!visible}
         className={cn(
           "flex min-h-0 min-w-0 shrink-0 flex-col bg-card",
           { right: "border-l", left: "border-r", top: "border-b", bottom: "border-t" }[side],
@@ -417,6 +490,7 @@ export function SideDock({
         style={covering ? undefined : across ? { height: size } : { width: size }}
       >
         {!up && head}
+        {visible && !shown && list}
         {drawn.map((p) => (
           <div key={p.id} hidden={p.id !== shown} className="flex min-h-0 min-w-0 flex-1 flex-col">
             {p.render(p.id === shown && dragging === null)}
