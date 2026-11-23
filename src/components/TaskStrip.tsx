@@ -267,6 +267,9 @@ export function TaskStrip({
                 : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
             )}
           >
+            {/* the sidebar edge's colours carried up its side and round its
+                corner, fading along its top (styles.css, .tab-outline) */}
+            {active && <span aria-hidden className="tab-outline" />}
             <LaneMark state={task.state} unread={task.unread} />
             <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{task.title}</span>
             {task.context && ((measuredContext(task.context) && task.context.fraction >= RING_FROM) || task.context.summarised) && (

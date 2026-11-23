@@ -1122,6 +1122,8 @@ function Tabs({
                 <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden />
               ) : face ? (
                 <AgentAvatar bot={face} size={15} className="shrink-0" />
+              ) : tab.favicon ? (
+                <img src={tab.favicon} alt="" draggable={false} className="size-[15px] shrink-0 rounded-[3px] object-contain" />
               ) : (
                 <Globe size={13} className="shrink-0" aria-hidden />
               )}

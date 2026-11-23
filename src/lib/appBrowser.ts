@@ -58,6 +58,8 @@ export interface BrowserTab {
   canGoBack: boolean;
   canGoForward: boolean;
   by: TabBy;
+  /** Its icon, as data the browser read (never an address). */
+  favicon?: string;
   dialog?: BrowserDialog;
 }
 

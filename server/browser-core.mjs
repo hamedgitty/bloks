@@ -616,6 +616,15 @@ async function afterDialog(tab, words) {
 export const AGENT_IDLE_MS = 45_000;
 
 /**
+ * A tab's icon as the panel may show it: an image already read by the
+ * browser itself and passed as data, small, of an image type. Never an
+ * address, which a phone or the web app would then fetch from the site.
+ */
+export function shownIcon(icon) {
+  return typeof icon === "string" && icon.length <= 32_768 && /^data:image\/(png|x-icon|vnd\.microsoft\.icon|gif|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(icon);
+}
+
+/**
  * One workspace's browser: its tabs, who drives which, and who has the
  * wheel right now. The tabs themselves are made by `makeTab` (a
  * WebContentsView in the app, a page of the server's Chrome, a fake in
@@ -665,6 +674,7 @@ export class AppBrowser {
         canGoBack: Boolean(tab.canGoBack?.()),
         canGoForward: Boolean(tab.canGoForward?.()),
         by: tab.by,
+        ...(shownIcon(tab.favicon?.()) ? { favicon: tab.favicon() } : {}),
         ...(tab.dialog
           ? {
               dialog: {

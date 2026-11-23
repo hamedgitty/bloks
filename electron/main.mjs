@@ -2847,6 +2847,9 @@ function makeBrowserTab(held, tabId) {
     appLog(`browser: debugger did not attach: ${error?.message ?? error}`);
   }
   held.views.set(tabId, view);
+  // the page's icon, read through the tab's own session and kept as data,
+  // which is all the panel shows (shownIcon in server/browser-core.mjs)
+  let icon = "";
   const tab = {
     cdp: (method, params = {}) => boundedCdp(wc, method, params),
     url: () => (wc.isDestroyed() ? "" : wc.getURL()),
@@ -2855,6 +2858,7 @@ function makeBrowserTab(held, tabId) {
     loading: () => !wc.isDestroyed() && wc.isLoading(),
     canGoBack: () => !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
     canGoForward: () => !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
+    favicon: () => icon,
     close: () => {
       held.views.delete(tabId);
       try {
@@ -2867,6 +2871,18 @@ function makeBrowserTab(held, tabId) {
   };
   const changed = () => held.browser.changed();
   for (const name of ["did-start-loading", "did-stop-loading", "page-title-updated", "did-navigate-in-page"]) wc.on(name, changed);
+  wc.on("did-navigate", () => {
+    icon = "";
+  });
+  wc.on("page-favicon-updated", (_event, urls) => {
+    const url = (urls ?? []).find((u) => /^https?:/.test(u));
+    if (!url) return;
+    void tabIcon(wc, url).then((read) => {
+      if (wc.isDestroyed() || read === icon) return;
+      icon = read;
+      changed();
+    });
+  });
   // An extension's own page never shows in a tab, however it came to be
   // asked for: the extension itself moving a tab (chrome.tabs.update)
   // starts no will-navigate. Its popup and options page are the owner's,
@@ -3308,6 +3324,21 @@ async function browserRead(id, said) {
 }
 
 /** A small picture of the tab on screen, for a phone looking on. */
+/** A page's icon fetched through its tab's own session, without cookies,
+ * as data: small images only, nothing at all otherwise. */
+async function tabIcon(wc, url) {
+  try {
+    const answer = await wc.session.fetch(url, { credentials: "omit", signal: AbortSignal.timeout(5_000) });
+    const type = (answer.headers.get("content-type") ?? "").split(";")[0].trim();
+    if (!answer.ok || !type.startsWith("image/")) return "";
+    const bytes = Buffer.from(await answer.arrayBuffer());
+    if (bytes.length > 24_000) return "";
+    return `data:${type};base64,${bytes.toString("base64")}`;
+  } catch {
+    return "";
+  }
+}
+
 async function browserThumbnail(id) {
   const held = browsers.get(id);
   const active = held?.browser.active;

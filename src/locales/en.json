@@ -2345,6 +2345,8 @@
   "dock.move.left": "Left",
   "dock.move.right": "Right",
   "dock.move.top": "Top",
+  "dock.moveTabs_one": "Move {count} tab to",
+  "dock.moveTabs_other": "Move {count} tabs to",
   "dock.moveTo": "Move to",
   "dock.newWindow": "Open in new window",
   "dock.panels": "Panels",

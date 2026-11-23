@@ -708,6 +708,31 @@
   background: radial-gradient(circle at 100% 0, transparent 9.5px, var(--background) 10px);
 }
 
+/* The conversation tab in front (TaskStrip.tsx), outlined in the colours
+ * of the sidebar's edge below: a hairline up its left side, round its top
+ * corner and along its top, fading out before the far side, so the light
+ * at the edge seems to run on into the tab. Three mask layers: the fade,
+ * over the ring left between the padding (left and top only) and the box. */
+.tab-outline {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px 10px 0 0;
+  padding: 1.5px 0 0 1.5px;
+  pointer-events: none;
+  background: linear-gradient(to right bottom, #5ce1e6, #cb6ce6 40%, #ff5757 80%);
+  opacity: 0.85;
+  -webkit-mask:
+    linear-gradient(to right, #000 15%, transparent 75%),
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: source-in, xor;
+  mask:
+    linear-gradient(to right, #000 15%, transparent 75%),
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: intersect, exclude;
+}
+
 /* The edge of a page's column (SideColumn.tsx): the brand gradient as a
  * hairline running down it, gone at the top and the bottom and strongest
  * through the middle, with a glow beside it on the page's side so faint it

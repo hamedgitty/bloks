@@ -41,7 +41,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AppBrowser, PROMPT_LIMIT, allowedForAgent, downloadName, isExtensionPage, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle, type TabPeek } from "./browser-core.mjs";
+import { AppBrowser, PROMPT_LIMIT, allowedForAgent, shownIcon, downloadName, isExtensionPage, refusedNavigation, type BrowserState, type Command, type TabAnswer, type TabBy, type TabHandle, type TabPeek } from "./browser-core.mjs";
 import { isPageOf, loadInto, pageUrl, pagesOf, readList, type ExtensionSession } from "./browser-extensions.mjs";
 import { browserSocket, chromePath, launch, Session, type CdpEvent } from "./cdp.ts";
 
@@ -189,6 +189,24 @@ export interface Viewport {
 
 const DEFAULT_VIEWPORT: Viewport = { width: 1280, height: 800, scale: 1 };
 
+/** What reads a page's icon: the one its head names, else the site's
+ * /favicon.ico, fetched without cookies and handed back as data. */
+const ICON_SCRIPT = `(async () => {
+  const named = [...document.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"]')].map((l) => l.href).find((h) => /^(https?:|data:image\\/)/.test(h));
+  const url = named || location.origin + "/favicon.ico";
+  if (url.startsWith("data:")) return url;
+  const answer = await fetch(url, { credentials: "omit" });
+  if (!answer.ok) return "";
+  const blob = await answer.blob();
+  if (!blob.type.startsWith("image/") || blob.size > 24000) return "";
+  return await new Promise((done) => {
+    const reader = new FileReader();
+    reader.onload = () => done(String(reader.result));
+    reader.onerror = () => done("");
+    reader.readAsDataURL(blob);
+  });
+})()`;
+
 /** The panel's size as a page lays out at it, within reason. */
 export function readViewport(body: unknown, { relay = false }: { relay?: boolean } = {}): Viewport | null {
   const said = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -232,6 +250,9 @@ class PageTab implements TabHandle {
   back = false;
   forward = false;
   lookedAt = 0;
+  /** Its icon as data (shownIcon), and the page it was read for. */
+  icon = "";
+  iconFor = "";
   private readonly owner: ServerBrowser;
 
   constructor(owner: ServerBrowser, id: string) {
@@ -250,6 +271,10 @@ class PageTab implements TabHandle {
 
   title() {
     return this.name;
+  }
+
+  favicon() {
+    return this.icon;
   }
 
   load(url: string) {
@@ -288,6 +313,9 @@ const GUARDED = [
 const WATCH_LEASE_MS = 15_000;
 /** The fewest milliseconds between two pictures: ten a second at most. */
 const FRAME_GAP_MS = 100;
+/** How long a page shows no change before its picture is taken again at
+ * the panel's own sharpness (pictured, below). */
+const SHARPEN_MS = 250;
 /** A browser with no tabs left is closed after this, to give the server
  * its memory back; its sign-ins stay in the profile for next time. */
 const IDLE_CLOSE_MS = 10 * 60_000;
@@ -376,6 +404,7 @@ export class ServerBrowser {
   private readonly frameWaiters = new Set<() => void>();
   private watchedUntil = 0;
   private castTimer: ReturnType<typeof setInterval> | null = null;
+  private sharpTimer: ReturnType<typeof setTimeout> | null = null;
   private stateTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly downloads = new Map<string, { name: string; by?: string; at: number }>();
@@ -818,9 +847,45 @@ export class ServerBrowser {
       if (typeof title === "string") tab.name = title === tab.href ? "" : title;
       tab.lookedAt = Date.now();
       this.browser.changed();
+      // a page loaded that its icon was not read for: read it once
+      if (!tab.busy && tab.href !== tab.iconFor) {
+        tab.iconFor = tab.href;
+        void this.readIcon(tab);
+      }
     } catch {
       /* closing; nothing to say */
     }
+  }
+
+  /**
+   * The page's icon, read by this browser in a world of its own beside
+   * the page's (so the page's scripts cannot answer for it) and passed on
+   * as data: the panel, a phone and the web app show it without asking
+   * the site for anything. A page with none, or one too large, has none.
+   */
+  private async readIcon(tab: PageTab) {
+    const href = tab.href;
+    if (!/^https?:/.test(href)) {
+      if (tab.icon) {
+        tab.icon = "";
+        this.browser.changed();
+      }
+      return;
+    }
+    const world = await this.send(tab, "Page.createIsolatedWorld", { frameId: tab.targetId, worldName: "bloks-icon" }).catch(() => null);
+    const said = await this.send(tab, "Runtime.evaluate", {
+      expression: ICON_SCRIPT,
+      awaitPromise: true,
+      returnByValue: true,
+      timeout: 5_000,
+      ...(typeof world?.executionContextId === "number" ? { contextId: world.executionContextId } : {}),
+    }).catch(() => null);
+    if (tab.href !== href) return;
+    const value = said?.result?.value;
+    const icon = shownIcon(value) ? (value as string) : "";
+    if (icon === tab.icon) return;
+    tab.icon = icon;
+    this.browser.changed();
   }
 
   private attached(line: CdpLine, params: { sessionId?: string; targetInfo?: Attached["info"] & { targetId?: string }; waitingForDebugger?: boolean }) {
@@ -1299,13 +1364,26 @@ export class ServerBrowser {
     };
     this.wakeWatchers();
     setTimeout(ack, FRAME_GAP_MS).unref?.();
+    // Chrome's moving pictures come at the page's own size whatever its
+    // scale, which on a sharp screen reads as blurred. Once the page holds
+    // still a moment, it is taken again as a screenshot, which keeps the
+    // scale: moving it stays quick, reading it is sharp.
+    if (this.viewport.scale > 1) {
+      if (this.sharpTimer) clearTimeout(this.sharpTimer);
+      this.sharpTimer = setTimeout(() => {
+        this.sharpTimer = null;
+        void this.still(tab);
+      }, SHARPEN_MS);
+      this.sharpTimer.unref?.();
+    }
     // a page that changes says so in pictures, and maybe in its title
     if (Date.now() - tab.lookedAt > 2_000) void this.history(tab);
   }
 
   /** One picture of a tab as it stands, taken rather than sent. */
   private async still(tab: PageTab) {
-    const shot = await tab.cdp("Page.captureScreenshot", { format: "jpeg", quality: 60 }).catch(() => null);
+    // sharper than the moving pictures: this one is read
+    const shot = await tab.cdp("Page.captureScreenshot", { format: "jpeg", quality: 80 }).catch(() => null);
     if (typeof shot?.data !== "string" || this.castTab !== tab) return;
     this.frame = { seq: ++this.frameSeq, jpeg: shot.data, width: this.viewport.width, height: this.viewport.height, tab: tab.id, at: Date.now() };
     this.wakeWatchers();

@@ -317,7 +317,7 @@ export function SideDock({
             isFront ? "border-border bg-accent text-foreground" : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <span className="flex shrink-0 [&_svg]:size-[15px]" aria-hidden>
+          <span className="flex shrink-0 [&_img]:size-[15px] [&_svg]:size-[15px]" aria-hidden>
             {icon}
           </span>
           <span className="truncate">{label}</span>
@@ -428,6 +428,7 @@ export function SideDock({
           canMove={canMove}
           onMove={(to) => dock.move(placeKey, front.id, to)}
           popOut={front.popOut}
+          tabs={front.items?.length ?? 1}
         />
       )}
       <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey, side)}>
@@ -537,7 +538,11 @@ function ExpandControl({
   canMove,
   onMove,
   popOut,
+  tabs,
 }: {
+  /** How many tabs of the strip move with it: a browser's pages, a
+   * terminal's shells. */
+  tabs: number;
   expanded: boolean;
   onToggle: () => void;
   side: DockSide;
@@ -581,8 +586,8 @@ function ExpandControl({
       <DropdownMenuContent align="end" className="min-w-[220px]" onPointerEnter={rest} onPointerLeave={leave}>
         {canMove && (
           <>
-            <DropdownMenuLabel>{t("dock.moveTo")}</DropdownMenuLabel>
-            <div role="group" aria-label={t("dock.moveTo")} className="flex gap-1 px-1 pb-1">
+            <DropdownMenuLabel>{tabs > 1 ? t("dock.moveTabs", { count: tabs }) : t("dock.moveTo")}</DropdownMenuLabel>
+            <div role="group" aria-label={tabs > 1 ? t("dock.moveTabs", { count: tabs }) : t("dock.moveTo")} className="flex gap-1 px-1 pb-1">
               {(["left", "right", "top", "bottom"] as const).map((to) => (
                 <DropdownMenuItem
                   key={to}

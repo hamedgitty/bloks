@@ -109,8 +109,12 @@ export interface TabHandle {
   loading?(): boolean;
   canGoBack?(): boolean;
   canGoForward?(): boolean;
+  /** Its icon as data, once the browser has read it (shownIcon). */
+  favicon?(): string;
   close?(): void;
 }
+
+export function shownIcon(icon: unknown): boolean;
 
 export interface Command {
   action: string;
@@ -169,7 +173,7 @@ export type Control =
   | { by: "person"; since: number; from?: { botId: string; name: string }; waiting?: { botId: string; name: string } };
 
 export interface BrowserState {
-  tabs: Array<{ id: string; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; by: TabBy; dialog?: DialogShown }>;
+  tabs: Array<{ id: string; url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; by: TabBy; favicon?: string; dialog?: DialogShown }>;
   activeTabId: string | null;
   control: Control;
   downloads: Download[];

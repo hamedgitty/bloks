@@ -32,7 +32,7 @@ import { TasksPanel, useBackgroundTasks } from "./dock/TasksPanel";
 import { runningCount } from "@/lib/backgroundTasks";
 import { DockHostContext, type DockHost } from "./dock/context";
 import { ComputerPanel } from "./ComputerPanel";
-import { chatKey, dock, DOCK_SIDES, paneOf, placeIn, shownAnywhere, sideOf, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
+import { chatKey, dock, DOCK_SIDES, minimizedIn, paneOf, placeIn, shownAnywhere, sideOf, useDockFocus, useDockState, type DockPanel } from "@/lib/dock";
 import { browserStatus, computerStatus, pageOpen, currentTurn, strongest, tabsInScope, turnComputerUse } from "@/lib/dockActivity";
 import { tabLabel } from "@/lib/appBrowser";
 import { dockChord, expandChord, panelChord } from "@/lib/dockKeys";
@@ -190,6 +190,13 @@ function LandMark({ on }: { on: boolean }) {
       )}
     </AnimatePresence>
   );
+}
+
+/** What is running in a panel, beside its name: "running" for one, the
+ * number before it for more, nothing for none. */
+function runningLabel(n: number): string | undefined {
+  if (n <= 0) return undefined;
+  return n === 1 ? t("dock.running") : t("dock.tasks.count", { count: n });
 }
 
 export function ChatView({ bot }: { bot: Bot }) {
@@ -826,9 +833,12 @@ export function ChatView({ bot }: { bot: Bot }) {
     }
     if (terminalOpen && !dockShows("terminal") && paneOf(dockPlace, sideOf(dockPlace, "terminal")).panel !== "terminal") dock.show(dockKey, "terminal");
   }, [terminal.inDock]); // eslint-disable-line react-hooks/exhaustive-deps
+  // shown in the side panel, or minimized out of it (dock/MiniDock.tsx):
+  // either way its shells are on screen and open
+  const terminalMini = minimizedIn(dockPlace).some((m) => m.panel === "terminal");
   useEffect(() => {
-    if (dockShows("terminal") && terminal.inDock && !terminalOpen) setTerminalOpen(true);
-  }, [dockKey, dockShows("terminal")]); // eslint-disable-line react-hooks/exhaustive-deps
+    if ((dockShows("terminal") || terminalMini) && terminal.inDock && !terminalOpen) setTerminalOpen(true);
+  }, [dockKey, dockShows("terminal"), terminalMini]); // eslint-disable-line react-hooks/exhaustive-deps
   useSettingsObservation({
     "terminal.height": { status: "observed", value: terminal.layout.sizes.bottom },
     "terminal.open": { status: "observed", value: terminalOpen },
@@ -900,8 +910,19 @@ export function ChatView({ bot }: { bot: Bot }) {
   const laneId = bot.activeTaskId ?? bot.threadId;
   const laneChanges = useLaneChanges(laneId, useMemo(() => changesRound(bot.messages), [bot.messages]), dockShows("changes"));
   // a panel in a window of its own, in the desktop app (DockWindow.tsx)
+  // a popup in a browser tab, as the terminal's is (terminal/TerminalDock.tsx),
+  // but not from the web app reaching another computer
   const panelWindow = (panel: "docs" | "changes" | "tasks") =>
-    window.bloks?.dockWindow ? () => void window.bloks!.dockWindow!({ panel, botId: bot.id, laneId }) : undefined;
+    window.bloks?.dockWindow
+      ? () => void window.bloks!.dockWindow!({ panel, botId: bot.id, laneId })
+      : !window.bloks && !window.bloksWeb
+        ? () =>
+            void window.open(
+              `${location.pathname}?dock=${panel}&agent=${encodeURIComponent(bot.id)}&lane=${encodeURIComponent(laneId)}`,
+              `bloks-dock-${panel}-${bot.id}`,
+              "popup,width=760,height=640",
+            )
+        : undefined;
   const dockPanes: DockPane[] = [
     {
       id: "docs",
@@ -932,12 +953,14 @@ export function ChatView({ bot }: { bot: Bot }) {
             icon: <Globe size={15} />,
             keys: keysFor("dockBrowser", platformOf(), Boolean(window.bloks))[0],
             // on while it has a page open here or an agent is at it
-            count: someoneBrowsing || tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).length ? t("dock.running") : undefined,
+            count: runningLabel(Math.max(someoneBrowsing ? 1 : 0, tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).filter((tab) => tab.url && tab.url !== "about:blank").length)),
             status: browserStatus(browserState),
             // each page a tab of its own in the dock's strip
             items: tabsInScope(browserState?.tabs ?? [], browserScope, bot.id, browserState?.activeTabId ?? null).map((tab) => ({
               id: tab.id,
               label: tabLabel(tab) || t("browserPanel.newTab"),
+              // the page's own icon, read by the browser as data
+              icon: tab.favicon ? <img src={tab.favicon} alt="" draggable={false} className="size-[15px] rounded-[3px] object-contain" /> : undefined,
               title: tab.url,
               active: tab.id === browserState?.activeTabId,
               onSelect: () => void browserAct("selectTab", tab.id),
@@ -956,7 +979,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       label: t("dock.terminal.label"),
       icon: <SquareTerminal size={15} />,
       keys: keysFor("dockTerminal", platformOf(), Boolean(window.bloks))[0],
-      count: terminalTabs?.tabs.length ? t("dock.tasks.count", { count: terminalTabs.tabs.length }) : undefined,
+      count: runningLabel(terminalTabs?.tabs.length ?? 0),
       keepAlive: true,
       // each shell a tab of its own in the dock's strip, an agent's own
       // wearing its badge
@@ -982,7 +1005,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       id: "tasks",
       label: t("dock.tasks.label"),
       icon: <Hourglass size={15} />,
-      count: tasksRunning ? t("dock.tasks.count", { count: tasksRunning }) : undefined,
+      count: runningLabel(tasksRunning),
       popOut: panelWindow("tasks"),
       render: () => (
         <TasksPanel
