@@ -429,7 +429,7 @@ export const CLI_PROVIDERS = [
     name: "Antigravity",
     command: "agy",
     auth: "cli" as const,
-    keyHint: installHint("antigravity", "Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash"),
+    keyHint: installHint("antigravity", "Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash (1.5.13 or newer)", " (1.5.13 or newer)"),
     signInHint: "Run agy once to sign in with Google",
     docsUrl: "https://github.com/google-antigravity/antigravity-cli",
   },

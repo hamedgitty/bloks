@@ -6,7 +6,6 @@ import type { AnyProviderDriver } from "../contracts.ts";
 import { CUSTOM_SPEC, PROVIDER_SPECS } from "../providers.ts";
 import { CREDITS_SPEC, creditsAccess } from "../credits.ts";
 import { acpDriver, ACP_SPECS } from "./acp.ts";
-import { AntigravityDriver } from "./antigravity.ts";
 import { BoxAgentDriver } from "./boxagent.ts";
 import { ClaudeDriver } from "./claude.ts";
 import { CodexDriver } from "./codex.ts";
@@ -18,7 +17,6 @@ export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   // Bloks credits: the same driver, with a token that can be renewed
   openAiCompatDriver(CREDITS_SPEC, creditsAccess),
   ...ACP_SPECS.map(acpDriver),
-  AntigravityDriver,
   ClaudeDriver,
   CodexDriver,
   BoxAgentDriver,

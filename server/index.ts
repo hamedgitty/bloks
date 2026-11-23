@@ -9958,9 +9958,6 @@ async function startClaimedTurn(
         // never for a turn the owner did not vouch for, whose approvals
         // come to the owner and so need the guards that raise them
         ...(bot.approvals === "full" && !sharing && owners ? { fullAccess: true } : {}),
-        // auto on the same terms the approval gate waves things through
-        // on, for an engine that cannot ask the gate at all
-        ...(bot.approvals === "auto" && !sharing && owners ? { autoApproves: true } : {}),
         ...(!owners && !sharing ? { untrusted: true } : {}),
         // and the engine's own setup on this computer, which is the
         // owner's (the connectors of its sign-in, the servers in the

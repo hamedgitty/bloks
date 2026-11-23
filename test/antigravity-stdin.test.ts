@@ -1,7 +1,7 @@
-// The persona carries what the person wrote about themselves, and argv is
-// readable by every process on the machine through ps. Since agy 1.1.15 a
-// turn goes to it as one stream-json line on stdin; an older agy, which has
-// no stdin path, still gets --print.
+// End-to-end harness coverage for Antigravity over ACP:
+// - persona and message travel over JSON-RPC stdin, never in argv
+// - approval modes map to --dangerously-skip-permissions only on full access
+// - stdio MCP servers (including Composio bloks_connectors) reach session/new
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,27 +13,51 @@ import { startHarness } from "./helpers/server.ts";
 const PERSONA = "persona_canary_5e1d";
 const MESSAGE = "message_canary_83b0";
 
-async function turnOn(t: TestContext, version: string, approvals?: "ask" | "edits" | "auto" | "full") {
-  const home = mkdtempSync(join(tmpdir(), "bloks-agy-stdin-"));
+async function turnOn(
+  t: TestContext,
+  options: { approvals?: "ask" | "edits" | "auto" | "full"; composioKey?: string } = {},
+) {
+  const home = mkdtempSync(join(tmpdir(), "bloks-agy-acp-e2e-"));
   const seen = join(home, "seen.json");
   const cli = join(home, "fake-agy.mjs");
-  // a stand-in for agy that records how it was started and everything it
-  // read on stdin, then answers the way agy's stream-json output does
   writeFileSync(
     cli,
     `#!${process.execPath}
 import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { console.log(${JSON.stringify(version)}); process.exit(0); }
-if (args[0] === "models") process.exit(0);
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { input += chunk; });
-process.stdin.on("end", () => {
-  writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, input }));
-  const out = (frame) => console.log(JSON.stringify(frame));
-  out({ event: "init", conversation_id: "conv-1", init: {} });
-  out({ event: "result", conversation_id: "conv-1", result: { status: "SUCCESS", response: "Done." } });
+if (args[0] === "--version") { console.log("1.5.14"); process.exit(0); }
+const say = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+const record = { args, requests: [] };
+let model = "gemini-3.1-pro";
+let mode = "default";
+let thought = "high";
+const configOptions = () => [
+  { id: "model", category: "model", type: "select", currentValue: model, options: [{ value: "gemini-3.1-pro", name: "Gemini 3.1 Pro" }] },
+  { id: "mode", category: "mode", type: "select", currentValue: mode, options: [{ value: "default", name: "Default" }, { value: "auto", name: "Auto" }] },
+  { id: "thought_level", category: "thought_level", type: "select", currentValue: thought, options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }, { value: "xhigh", name: "XHigh" }] },
+];
+createInterface({ input: process.stdin }).on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.id === undefined || !msg.method) return;
+  record.requests.push({ method: msg.method, params: msg.params });
+  const reply = (result) => say({ jsonrpc: "2.0", id: msg.id, result });
+  if (msg.method === "initialize") {
+    reply({ protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
+  } else if (msg.method === "session/new") {
+    reply({ sessionId: "sess-1", configOptions: configOptions() });
+  } else if (msg.method === "session/set_config_option") {
+    if (msg.params.configId === "model") model = msg.params.value;
+    if (msg.params.configId === "mode") mode = msg.params.value;
+    if (msg.params.configId === "thought_level") thought = msg.params.value;
+    reply({ configOptions: configOptions() });
+  } else if (msg.method === "session/prompt") {
+    writeFileSync(${JSON.stringify(seen)}, JSON.stringify(record));
+    say({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } } });
+    reply({ stopReason: "end_turn" });
+  } else {
+    reply({});
+  }
 });
 `,
     { mode: 0o755 },
@@ -41,7 +65,11 @@ process.stdin.on("end", () => {
   mkdirSync(join(home, ".bloks"), { recursive: true });
   writeFileSync(
     join(home, ".bloks", "config.json"),
-    JSON.stringify({ instances: { agy: { driver: "antigravity", config: { cli } } }, profile: { about: PERSONA } }),
+    JSON.stringify({
+      instances: { agy: { driver: "antigravity", config: { cli } } },
+      profile: { about: PERSONA },
+      ...(options.composioKey ? { composio: { key: options.composioKey } } : {}),
+    }),
   );
   const h = await startHarness({ HOME: home });
   t.after(async () => {
@@ -51,7 +79,10 @@ process.stdin.on("end", () => {
   const { bot } = await h.json("/api/bots", { method: "POST", body: JSON.stringify({ name: "Gemma" }) });
   await h.fetch(`/api/bots/${bot.id}`, {
     method: "PATCH",
-    body: JSON.stringify({ modelSelection: { instanceId: "agy", model: "gemini-3.1-pro-high" }, ...(approvals ? { approvals } : {}) }),
+    body: JSON.stringify({
+      modelSelection: { instanceId: "agy", model: "gemini-3.1-pro" },
+      ...(options.approvals ? { approvals: options.approvals } : {}),
+    }),
   });
   await h.fetch(`/api/bots/${bot.id}/messages`, { method: "POST", body: JSON.stringify({ text: MESSAGE }) });
   for (let i = 0; i < 200 && !existsSync(seen); i++) await new Promise((r) => setTimeout(r, 50));
@@ -59,45 +90,41 @@ process.stdin.on("end", () => {
   const said = async () => ((await h.json(`/api/bots/${bot.id}/messages?limit=50`)).messages as any[]).some((m) => m.role === "bot" && m.text === "Done.");
   for (let i = 0; i < 200 && !(await said()); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(await said(), "the turn's answer never reached the chat");
-  return JSON.parse(readFileSync(seen, "utf8")) as { args: string[]; input: string };
+  return JSON.parse(readFileSync(seen, "utf8")) as { args: string[]; requests: Array<{ method: string; params: any }> };
 }
 
-test("a current agy gets the persona and the message on stdin, never in its arguments", async (t) => {
-  const { args, input } = await turnOn(t, "1.3.2");
+test("Antigravity runs over ACP with persona and message on stdin, never in argv, and mounts Composio", async (t) => {
+  const { args, requests } = await turnOn(t, { composioKey: "composio-test-key" });
   for (const secret of [PERSONA, MESSAGE]) {
     assert.ok(!args.some((arg) => arg.includes(secret)), `${secret} is in argv`);
   }
-  assert.ok(!args.includes("--print"), "the prompt is still asked for on the command line");
-  // agy's --print-timeout caps the whole turn, however busy (GitHub 528)
-  assert.ok(!args.includes("--print-timeout"), "the whole turn is still capped");
-  assert.deepEqual(args.slice(0, 4), ["--input-format", "stream-json", "--output-format", "stream-json"]);
-  // one line, as agy's headless docs give it, then the end of input
-  const lines = input.split("\n").filter(Boolean);
-  assert.equal(lines.length, 1);
-  const line = JSON.parse(lines[0]);
-  assert.equal(line.event, "user");
-  assert.ok(line.message.content.includes(PERSONA), "the persona did not arrive on stdin");
-  assert.ok(line.message.content.endsWith(MESSAGE), "the message did not arrive on stdin");
+  assert.deepEqual(args, ["acp"]);
+  const opened = requests.find((r) => r.method === "session/new");
+  assert.ok(opened, "session/new was not called");
+  const connectors = (opened.params.mcpServers ?? []).find((s: any) => s.name === "bloks_connectors");
+  assert.ok(connectors, "bloks_connectors stdio MCP server was not mounted");
+  assert.equal(connectors.command, process.execPath);
+  const prompt = requests.find((r) => r.method === "session/prompt");
+  const text = String(prompt?.params?.prompt?.[0]?.text ?? "");
+  assert.ok(text.includes(PERSONA), "persona did not arrive in session/prompt");
+  assert.ok(text.endsWith(MESSAGE), "message did not arrive in session/prompt");
 });
 
-test("an agy too old to read stdin is still handed the prompt with --print", async (t) => {
-  const { args, input } = await turnOn(t, "1.1.14");
-  assert.equal(args[0], "--print");
-  assert.ok(args[1].endsWith(MESSAGE));
-  assert.ok(!args.includes("--input-format"));
-  assert.ok(!args.includes("--print-timeout"), "the whole turn is still capped");
-  assert.equal(input, "");
-});
+test("Antigravity passes --dangerously-skip-permissions only for full access, and selects default mode otherwise", async (t) => {
+  const full = await turnOn(t, { approvals: "full" });
+  assert.deepEqual(full.args, ["acp", "--dangerously-skip-permissions"]);
+  assert.equal(
+    full.requests.some((r) => r.method === "session/set_config_option" && r.params?.configId === "mode"),
+    false,
+    "full access should not override mode back to default",
+  );
 
-// Print mode cannot raise an approval card, so whatever agy would have
-// asked it refuses. An agent on auto had every shell command refused that
-// way, because every turn ran in accept-edits (GitHub 542).
-test("the agent's approvals reach agy as the mode it runs in", async (t) => {
-  const modeOf = (args: string[]) =>
-    args.includes("--dangerously-skip-permissions") ? "skip" : args[args.indexOf("--mode") + 1];
-  assert.equal(modeOf((await turnOn(t, "1.5.14", "auto")).args), "auto");
-  assert.equal(modeOf((await turnOn(t, "1.5.14", "full")).args), "skip");
-  // nobody can say yes to a command here, so none goes ahead unasked
-  assert.equal(modeOf((await turnOn(t, "1.5.14", "ask")).args), "accept-edits");
-  assert.equal(modeOf((await turnOn(t, "1.5.14", "edits")).args), "accept-edits");
+  for (const approvals of ["ask", "edits", "auto"] as const) {
+    const run = await turnOn(t, { approvals });
+    assert.deepEqual(run.args, ["acp"], `${approvals} should not skip permissions`);
+    assert.ok(
+      run.requests.some((r) => r.method === "session/set_config_option" && r.params?.configId === "mode" && r.params?.value === "default"),
+      `${approvals} should enforce default mode`,
+    );
+  }
 });

@@ -1,9 +1,8 @@
-// An Antigravity agent's connected apps and MCP servers (GitHub 546). Print
-// mode takes no MCP servers of the turn's own, so a turn that carries them
-// runs over `agy acp`, which takes them in session/new. They arrive there
-// as the harness granted them, their keys over stdin and never in argv,
-// agy's environment or the native copy, and an agent without the grant
-// stays in print mode with none of them.
+// An Antigravity agent's connected apps and MCP servers (GitHub 546). Every
+// turn runs over `agy acp`, which takes them in session/new. They arrive
+// there as the harness granted them, their keys over stdin and never in
+// argv, agy's environment or the native copy, and an agent without the
+// grant gets none of them.
 // before anything loads server/config.ts, so nothing lands in ~/.bloks
 import "./helpers/own-data.ts";
 import assert from "node:assert/strict";
@@ -12,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
-import { AGY_ACP, agyIntegrations } from "../server/drivers/antigravity.ts";
 import { startHarness } from "./helpers/server.ts";
 
 const COMPOSIO_KEY = "ck_composio_canary_4f1e9a";
@@ -26,7 +24,6 @@ const SERVERS = [
 ];
 
 interface Seen {
-  mode: "print" | "acp";
   args: string[];
   env: Record<string, string>;
   requests: Array<{ method: string; params: any }>;
@@ -47,9 +44,9 @@ async function turnOn(t: TestContext, grant: { composio: boolean; mcp: string[] 
   const home = mkdtempSync(join(tmpdir(), "bloks-agy-integrations-"));
   const seen = join(home, "seen.json");
   const cli = join(home, "fake-agy.mjs");
-  // a stand-in for agy: print mode answers the way its stream-json does,
-  // and `agy acp` the way an ACP agent does, each writing down how it was
-  // started, what of its environment matters here, and what it was asked
+  // a stand-in for `agy acp`, answering the way an ACP agent does and
+  // writing down how it was started, what of its environment matters
+  // here, and what it was asked
   writeFileSync(
     cli,
     `#!${process.execPath}
@@ -68,19 +65,12 @@ if (args[0] === "acp") {
     requests.push({ method: msg.method, params: msg.params });
     const reply = (result) => out({ jsonrpc: "2.0", id: msg.id, result });
     if (msg.method === "initialize") reply({ protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: ${http} } } });
-    else if (msg.method === "session/new") reply({ sessionId: "agy-s1", modes: { currentModeId: "auto", availableModes: [{ id: "default" }, { id: "accept-edits" }, { id: "plan" }, { id: "auto" }] } });
+    else if (msg.method === "session/new") reply({ sessionId: "agy-s1", configOptions: [{ id: "model", category: "model", type: "select", currentValue: "gemini-3.1-pro", options: [{ value: "gemini-3.1-pro", name: "Gemini 3.1 Pro" }] }], modes: { currentModeId: "auto", availableModes: [{ id: "default" }, { id: "accept-edits" }, { id: "plan" }, { id: "auto" }] } });
     else if (msg.method === "session/prompt") {
-      writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ mode: "acp", args, env, requests }));
+      writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, env, requests }));
       out({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "agy-s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } } } });
       reply({ stopReason: "end_turn" });
     } else reply({});
-  });
-} else {
-  process.stdin.resume();
-  process.stdin.on("end", () => {
-    writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ mode: "print", args, env, requests: [] }));
-    out({ event: "init", conversation_id: "conv-1", init: {} });
-    out({ event: "result", conversation_id: "conv-1", result: { status: "SUCCESS", response: "Done." } });
   });
 }
 `,
@@ -100,7 +90,7 @@ if (args[0] === "acp") {
   await h.fetch(`/api/bots/${bot.id}`, {
     method: "PATCH",
     body: JSON.stringify({
-      modelSelection: { instanceId: "agy", model: "gemini-3.1-pro-high" },
+      modelSelection: { instanceId: "agy", model: "gemini-3.1-pro" },
       composio: grant.composio,
       mcpServers: grant.mcp,
       ...(approvals ? { approvals } : {}),
@@ -125,13 +115,12 @@ if (args[0] === "acp") {
 /** A turn that answers, as the tests below expect of it. */
 async function answered(t: TestContext, grant: { composio: boolean; mcp: string[] }, approvals?: "ask" | "full") {
   const seen = await turnOn(t, grant, approvals);
-  assert.ok("mode" in seen);
+  assert.ok("requests" in seen);
   return seen;
 }
 
 test("a granted agent's connected apps and MCP servers reach agy acp's session/new", async (t) => {
   const seen = await answered(t, { composio: true, mcp: ["notes", "tracker"] });
-  assert.equal(seen.mode, "acp", "the turn stayed in print mode, which takes no servers of its own");
   assert.deepEqual(seen.args, ["acp"]);
   const opened = seen.requests.find((r) => r.method === "session/new");
   assert.ok(opened, "no session was opened");
@@ -161,7 +150,6 @@ test("a granted agent's connected apps and MCP servers reach agy acp's session/n
 
 test("no key, header or server environment is in agy's argv, its environment, the native copy or the logs", async (t) => {
   const seen = await answered(t, { composio: true, mcp: ["notes", "tracker"] });
-  assert.equal(seen.mode, "acp");
   for (const secret of SECRETS) {
     assert.ok(!seen.args.some((arg) => arg.includes(secret)), `${secret} is in argv`);
     assert.ok(!seen.native.includes(secret), `${secret} is in the native copy`);
@@ -171,46 +159,30 @@ test("no key, header or server environment is in agy's argv, its environment, th
   assert.ok(seen.native.includes("session/new"), "the native copy was not written at all");
 });
 
-test("an agent without the grant gets none of them, and stays in print mode", async (t) => {
+test("an agent without the grant gets none of them", async (t) => {
   const seen = await answered(t, { composio: false, mcp: [] });
-  assert.equal(seen.mode, "print");
-  for (const secret of SECRETS) assert.ok(!seen.args.some((arg) => arg.includes(secret)), `${secret} is in argv`);
-  assert.deepEqual(seen.env, {});
-  assert.ok(!seen.args.includes("acp"));
+  const opened = seen.requests.find((r) => r.method === "session/new");
+  const names = (opened!.params.mcpServers as any[]).map((server) => server.name);
+  for (const name of ["Notes", "Tracker", "bloks_connectors"]) assert.ok(!names.includes(name), `${name} reached agy`);
+  for (const secret of SECRETS) assert.ok(!JSON.stringify(seen).includes(secret), `${secret} reached agy`);
 });
 
 test("only the servers granted to the agent go, without its connected apps when those are off", async (t) => {
   const seen = await answered(t, { composio: false, mcp: ["tracker"] });
-  assert.equal(seen.mode, "acp");
   const opened = seen.requests.find((r) => r.method === "session/new");
   assert.deepEqual((opened!.params.mcpServers as any[]).map((server) => server.name), ["Tracker"]);
   assert.ok(!JSON.stringify(seen.requests).includes(COMPOSIO_KEY), "the Composio key reached agy anyway");
   assert.ok(!JSON.stringify(seen.requests).includes(ENV_SECRET), "a server it was not granted reached agy");
 });
 
-test("full access is agy's own flag over ACP, as in print mode", async (t) => {
+test("full access is agy's own flag", async (t) => {
   const seen = await answered(t, { composio: false, mcp: ["tracker"] }, "full");
-  assert.equal(seen.mode, "acp");
   assert.deepEqual(seen.args, ["acp", "--dangerously-skip-permissions"]);
-});
-
-test("agy is handed the connected apps and MCP servers, and none of the screens", () => {
-  assert.equal(agyIntegrations({}), null);
-  assert.equal(agyIntegrations({ integrations: { mcpServers: [] } }), null);
-  assert.equal(agyIntegrations({ integrations: { browser: { profileDir: "/x" }, computer: { boxId: "b", token: "t" } } }), null);
-  const mcpServers = [{ name: "Tracker", transport: "http" as const, url: "https://mcp.example.test/mcp" }];
-  assert.deepEqual(
-    agyIntegrations({ integrations: { composio: { key: "k" }, mcpServers, browser: { profileDir: "/x" }, sandbox: { runtime: "docker", name: "s" } } }),
-    { composio: { key: "k" }, mcpServers },
-  );
-  // a turn the owner did not vouch for asks, however the engine is set
-  assert.deepEqual(AGY_ACP.turnArgs!({ fullAuto: false, fullAccess: false }), []);
-  assert.deepEqual(AGY_ACP.turnArgs!({ fullAuto: true }), ["--dangerously-skip-permissions"]);
 });
 
 test("an HTTP server agy cannot take is said plainly, and the message is not sent", async (t) => {
   const seen = await turnOn(t, { composio: false, mcp: ["tracker"] }, undefined, false);
-  assert.ok(!("mode" in seen));
+  assert.ok(!("requests" in seen));
   assert.ok(!seen.ran, "the prompt went to agy without its server");
   assert.match(seen.told ?? "", /Antigravity does not support the selected HTTP MCP app Tracker, so the message was not sent/);
 });
