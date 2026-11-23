@@ -283,9 +283,9 @@ export function SideDock({
   const up = Boolean(headSlot && visible && !covering && side === "right");
   useLayoutEffect(() => {
     if (!headSlot) return;
-    // the slot takes the pane's width and its edge's, so the tabs sit
+    // the slot takes the pane's width (its edge takes none), so the tabs sit
     // right over the panel they belong to
-    headSlot.style.width = up ? `${size + 6}px` : "0px";
+    headSlot.style.width = up ? `${size}px` : "0px";
   }, [headSlot, up, size]);
 
   useLayoutEffect(() => {
@@ -372,9 +372,7 @@ export function SideDock({
     </DropdownMenu>
   );
   const head = (
-    // up in the top row the slot also spans the resize edge beside the
-    // pane, so the row starts past it and its line meets the pane's below
-    <div className={cn("flex shrink-0 items-center gap-1 px-2", up ? "ml-1.5 h-full border-l bg-card" : "h-[42px] border-b")}>
+    <div className={cn("flex shrink-0 items-center gap-1 px-2", up ? "h-full border-l bg-card" : "h-[42px] border-b")}>
       <div
         ref={strip}
         style={fade}
@@ -632,6 +630,10 @@ function Edge({ side, size, room, onDrag, onDone }: { side: DockSide; size: numb
   // dragging toward the conversation makes the pane larger
   const grows = side === "right" || side === "bottom" ? -1 : 1;
   return (
+    // no room of its own: a zero-width rail on the pane's border line, its
+    // grip laid over the line, so nothing shows between the conversation
+    // and the pane
+    <div className={cn("relative z-10 shrink-0", across ? "h-0" : "w-0")}>
     <div
       role="separator"
       aria-orientation={across ? "horizontal" : "vertical"}
@@ -665,9 +667,10 @@ function Edge({ side, size, room, onDrag, onDone }: { side: DockSide; size: numb
         onDone(clamp(size + grows * toward * (e.shiftKey ? 64 : 16)));
       }}
       className={cn(
-        "shrink-0 bg-transparent outline-none transition-colors duration-150 hover:bg-accent focus-visible:bg-accent",
-        across ? "h-1.5 cursor-ns-resize" : "w-1.5 cursor-ew-resize",
+        "absolute bg-transparent outline-none transition-colors duration-150 hover:bg-accent focus-visible:bg-accent",
+        across ? "inset-x-0 -top-[3px] h-1.5 cursor-ns-resize" : "inset-y-0 -left-[3px] w-1.5 cursor-ew-resize",
       )}
     />
+    </div>
   );
 }
