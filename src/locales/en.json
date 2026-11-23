@@ -2270,7 +2270,7 @@
   "dictation.speech.recognitionError": "Dictation stopped. Try again, or check your microphone.",
   "dictation.speech.recognizerUnavailable": "English speech recognition isn't available on this Mac right now.",
   "dictation.speech.stoppedUnexpectedly": "Dictation stopped unexpectedly.",
-  "dock.add": "Open a panel",
+  "dock.add": "New tab",
   "dock.browser.here": "On this computer",
   "dock.browser.label": "Browser",
   "dock.browser.onServer": "On the server",

@@ -17,6 +17,7 @@ import {
   clampDockWidth,
   closeDoc,
   closeTab,
+  sideForNew,
   clampPaneHeight,
   ACROSS_SIZE,
   dropPanel,
@@ -406,6 +407,19 @@ describe("panes on every side", () => {
     assert.equal(place.sides?.docs, undefined);
     assert.equal(paneOf(place, "left").open, false);
     assert.equal(place.panel, "docs");
+  });
+
+  test("a new tab of a kind open in another pane goes to that pane", () => {
+    // the browser on the right, the terminal moved to the bottom
+    let s = showPanel(showPanel(empty(), a, "browser", 1), a, "terminal", 2);
+    s = moveTab(s, a, "terminal", "bottom", 3);
+    const place = placeIn(s, a);
+    assert.equal(sideForNew(place, "browser", "bottom"), "right", "a page asked for in the terminal's pane joins the browser's");
+    assert.equal(sideForNew(place, "terminal", "right"), "bottom", "a shell asked for in the browser's pane joins the terminal's");
+    assert.equal(sideForNew(place, "changes", "bottom"), "bottom", "a kind open nowhere comes to the pane that asked");
+    // closed, it is open nowhere, and comes where it is asked for
+    s = closeTab(s, a, "browser", 4);
+    assert.equal(sideForNew(placeIn(s, a), "browser", "bottom"), "bottom");
   });
 
   test("showing, closing and hiding happen on the panel's own side", () => {

@@ -3,11 +3,12 @@
 // always was; a tab moved to the left, the top or the bottom opens a pane
 // there, with a strip of its own.
 //
-// Each pane's top is one quiet row: a + on the far left that lists every
-// kind of panel this conversation offers, with what each holds and its
-// key, and adds it to this pane; then a strip of tabs, one for each panel
-// open on that side, the shown one pressed, each with its own ×; and on
-// the far right the pane's own icon, which hides it and keeps what is in
+// Each pane's top is one quiet row: a strip of tabs, one for each panel
+// open on that side, each its icon and name, the shown one a bordered
+// pill, an × on the one under the pointer; right after the last tab (so
+// on the far left when there is none) a + that lists every kind of panel
+// this conversation offers, with what each holds and its key, and adds it
+// to this pane; and on the far right the pane's own icon, which hides it and keeps what is in
 // it. A panel that holds several things of its own (terminal shells,
 // browser pages) shows each as a tab of its own in the strip, flat beside
 // the rest; selecting one brings that panel forward on it, and its ×
@@ -59,6 +60,7 @@ import {
   DOCK_SIDE_BY_SIDE,
   paneOf,
   placeIn,
+  sideForNew,
   sideOf,
   tabsOn,
   useDockState,
@@ -246,8 +248,15 @@ export function SideDock({
     if (sideOf(place, panel) !== side) dock.move(placeKey, panel, side);
     else dock.show(placeKey, panel);
   };
+  // A new tab of a kind already open in another pane goes to that pane: a
+  // page opened from the terminal's pane joins the browser's, wherever the
+  // browser sits, and a shell opened from the browser's pane joins the
+  // terminal's. Only a kind open nowhere comes to this pane.
   const add = (p: DockPane) => {
-    pick(p.id);
+    if (sideForNew(place, p.id, side) !== side) {
+      onPick?.(p.id);
+      dock.show(placeKey, p.id);
+    } else pick(p.id);
     p.onAdd?.();
   };
   const front = ordered.find((p) => p.id === shown);
@@ -321,12 +330,14 @@ export function SideDock({
           title={title ?? (p.detail ? `${label}, ${p.detail}` : label)}
           data-dock-tab={key}
           onClick={onSelect}
+          // the tab in front a bordered pill, the rest plain words until
+          // the pointer is on them
           className={cn(
-            "relative flex h-7 max-w-[160px] items-center gap-1.5 rounded-md pl-2 pr-6 text-body outline-none transition-colors duration-150",
-            isFront ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+            "relative flex h-7.5 max-w-[180px] items-center gap-2 rounded-lg border px-2.5 text-ui outline-none transition-[background-color,border-color,color] duration-150",
+            isFront ? "border-border bg-accent text-foreground" : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
-          <span className="flex shrink-0 [&_svg]:size-[14px]" aria-hidden>
+          <span className="flex shrink-0 [&_svg]:size-[15px]" aria-hidden>
             {icon}
           </span>
           <span className="truncate">{label}</span>
@@ -334,7 +345,7 @@ export function SideDock({
             <span
               aria-hidden
               data-dock-status={p.status}
-              className={cn("absolute bottom-0.5 left-[13px] size-1.5 -translate-x-1/2 rounded-full", status.dot, status.pulse && "motion-safe:animate-pulse")}
+              className={cn("absolute bottom-0.5 left-[17px] size-1.5 -translate-x-1/2 rounded-full", status.dot, status.pulse && "motion-safe:animate-pulse")}
             />
           )}
         </button>
@@ -344,10 +355,9 @@ export function SideDock({
           aria-label={t("dock.closeTab", { name: label })}
           title={t("dock.closeTab", { name: label })}
           onClick={onClose}
-          className={cn(
-            "absolute right-1 flex size-5 items-center justify-center rounded text-muted-foreground transition-[opacity,background-color,color] duration-150 hover:bg-foreground/10 hover:text-foreground",
-            isFront ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-          )}
+          // only on the tab under the pointer, over the end of its words on
+          // the tab's own colour, so a short title never makes room for it
+          className="absolute right-1.5 flex size-5 items-center justify-center rounded-md bg-accent text-muted-foreground opacity-0 transition-[opacity,color] duration-150 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
         >
           <X size={12} />
         </button>
@@ -384,14 +394,13 @@ export function SideDock({
   const head = (
     // up in the top row the slot also spans the resize edge beside the
     // pane, so the row starts past it and its line meets the pane's below
-    <div className={cn("flex shrink-0 items-center gap-1 px-1.5", up ? "ml-1.5 h-full border-l bg-card" : "h-[38px] border-b")}>
-      {plus}
+    <div className={cn("flex shrink-0 items-center gap-1 px-2", up ? "ml-1.5 h-full border-l bg-card" : "h-[42px] border-b")}>
       <div
         ref={strip}
         style={fade}
         role="tablist"
         aria-label={t("dock.panels")}
-        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {tabs.flatMap((p) =>
           p.items?.length
@@ -413,6 +422,9 @@ export function SideDock({
             : [tab(p.id, p, p.label, p.icon, p.id === shown, () => pick(p.id), () => dock.closeTab(placeKey, p.id))],
         )}
       </div>
+      {/* right after the last tab, and first when there is none */}
+      {plus}
+      <span className="flex-1" />
       {expanded && (
         <HeaderButton label={t("dock.restore")} pressed onClick={() => setExpanded(false)}>
           <Minimize2 size={15} />

@@ -127,6 +127,14 @@ export function tabsOn(place: DockPlace, side: DockSide): DockPanel[] {
   return place.tabs.filter((t) => sideOf(place, t) === side);
 }
 
+/** Where a new tab of a panel's kind goes when a pane's + asks for one: to
+ * the pane that already holds that panel, if one does, so a page opened
+ * from the terminal's pane joins the browser's and a shell opened from the
+ * browser's pane joins the terminal's; otherwise to the pane that asked. */
+export function sideForNew(place: DockPlace, panel: DockPanel, asking: DockSide): DockSide {
+  return place.tabs.includes(panel) ? sideOf(place, panel) : asking;
+}
+
 /** Whether a panel is on screen, in whichever pane it is in. */
 export function shownAnywhere(place: DockPlace, panel: DockPanel): boolean {
   const pane = paneOf(place, sideOf(place, panel));
