@@ -382,7 +382,9 @@ export function SideDock({
     </DropdownMenu>
   );
   const head = (
-    <div className={cn("flex shrink-0 items-center gap-1 px-1.5", up ? "h-full border-l bg-card" : "h-[38px] border-b")}>
+    // up in the top row the slot also spans the resize edge beside the
+    // pane, so the row starts past it and its line meets the pane's below
+    <div className={cn("flex shrink-0 items-center gap-1 px-1.5", up ? "ml-1.5 h-full border-l bg-card" : "h-[38px] border-b")}>
       {plus}
       <div
         ref={strip}
