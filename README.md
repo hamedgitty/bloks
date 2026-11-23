@@ -751,6 +751,15 @@ has no browser or screen rather than promised one, and its turns never
 hold the Local VM from agents that could use it. On a Linux server with
 no display, the agent's browser runs headless.
 
+Connected apps and the MCP servers you attach to an agent reach it on
+Antigravity too. Antigravity's headless mode cannot take an agent's own servers, so a turn that has
+any runs through `agy acp` instead, which can: the agent gets exactly
+the apps and servers its settings grant, their keys and headers never
+on a command line, and anything agy would ask about comes to you as an
+approval card, answered by the agent's approval mode like any other. A
+server agy cannot reach stops the turn and says why. Turns without
+apps or servers run as before.
+
 An MCP server you add as a command is looked for on this computer, never
 run to check it. If the program is not there, Settings, Plugins says
 **Command not found** and how to fix it, and a turn leaves that server

@@ -167,6 +167,25 @@ without its arguments and with the home folder as `~`, which Settings
 shows as "Command not found". A `~/` command is handed over expanded,
 since nothing spawns through a shell.
 
+Antigravity's print mode takes no MCP servers of a turn's own: agy reads
+them only from its global `~/.gemini/config/mcp_config.json`, which
+would hand them to every agy on the computer, and `--settings` carries
+`settings.json` keys, which have none. A turn whose integrations carry
+the agent's connected apps or any of its MCP servers therefore runs over
+`agy acp` (`AGY_ACP`, `agyIntegrations` in
+`server/drivers/antigravity.ts`), through the ACP driver: the servers go
+in `session/new` (and `session/load`) like any ACP agent's, the
+connectors as the `bloks_connectors` stdio bridge, stdio servers with
+their own environment and HTTP servers with their headers, all over
+stdin, never in argv or agy's environment, and taken out of the native
+copy. Only those two are handed over; the browser and the computers
+stay out, as the adapter claims no screens. An HTTP server agy does not
+say it takes, or a server that cannot be reached where the turn works,
+refuses the turn with the reason, as for every ACP agent. A turn
+without either stays in print mode. Either way the turn is handed the
+conversation's resume cursor; an `agy acp` that does not find it opens
+a new session and is told the story.
+
 Where commands are looked for is PATH, and an app opened from Finder
 starts with launchd's. The desktop app asks the person's login shell
 (`-ilc`) for its PATH before it forks a server, and reads the answer
@@ -5170,7 +5189,11 @@ card at all, so its turn is told the mode up front instead (GitHub 542):
 edits and the commands agy's reviewer clears go ahead and the rest are
 refused; `ask` and `edits` run it in `accept-edits`, where edits go
 ahead and every command is refused. Rules cannot see what agy does in
-either. A shared room never gets `fullAccess`, and nor
+either. A turn that carries the agent's connected apps or MCP servers
+runs over `agy acp` instead (see The person's own MCP servers), opened
+in agy's `default` mode, so what agy would ask about comes to the gate
+as a card and the mode answers it like any ACP agent's; `full` is
+still `--dangerously-skip-permissions`. A shared room never gets `fullAccess`, and nor
 does an email from anyone (see Email your agent): a turn somebody other
 than the owner asked for is held to the owner's yes, whatever the mode.
 

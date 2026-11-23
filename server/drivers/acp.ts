@@ -61,7 +61,7 @@ export interface AcpSpec {
   args: string[];
   /** Extra argv built per turn, for CLIs that take model or permission
    * flags on the command line rather than through the protocol. */
-  turnArgs?: (opts: { fullAuto: boolean; model?: string; effort?: Effort }) => string[];
+  turnArgs?: (opts: { fullAuto: boolean; fullAccess?: boolean; model?: string; effort?: Effort }) => string[];
   /** The effort levels this agent takes, through turnArgs or an ACP option. */
   efforts?: readonly Effort[];
   /** A separate per-model reasoning selector and its native default token. */
@@ -666,6 +666,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           ...(spec.turnArgs?.({
             // a turn the owner did not vouch for asks, however the engine is set
             fullAuto: config.fullAuto && !turn.untrusted,
+            // the agent's own full access, which never reaches a shared turn
+            fullAccess: Boolean(turn.fullAccess && !turn.shared && !turn.untrusted),
             model: turn.model,
             effort: turn.effort,
           }) ?? []),

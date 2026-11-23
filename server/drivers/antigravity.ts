@@ -18,6 +18,16 @@
 //   runs in agy's own Auto mode; full access and the full-auto setting
 //   remove the guardrails entirely, which is the user's explicit call in
 //   settings (agyMode). Approval cards therefore never originate here.
+//
+//   Print mode takes no MCP servers of the turn's own: agy reads them only
+//   from its global mcp_config.json, and --settings carries settings.json
+//   keys, which have none. So a turn that carries the agent's connected
+//   apps or its MCP servers runs over `agy acp` instead, where ACP's
+//   session/new takes them per session (GitHub 546). That turn is the ACP
+//   driver's (acp.ts), with everything it does for the other ACP agents:
+//   the connectors bridge, keys and headers over stdin and out of argv and
+//   the native copy, and a plain refusal for what cannot be reached. agy
+//   there can ask, so its questions become cards like any ACP agent's.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
@@ -41,6 +51,7 @@ import { OWN_GROUP } from "../no-console.ts";
 import { EngineProcesses, signalGroup } from "./engine-processes.ts";
 import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
 import { TurnProcess } from "./turn-process.ts";
+import { acpDriver, type AcpSpec } from "./acp.ts";
 
 const DRIVER_KIND = "antigravity";
 
@@ -157,6 +168,36 @@ function agyArgv(config: AntigravityConfig, turn: SendTurnInput, viaStdin: boole
   return argv;
 }
 
+/** `agy acp` as the ACP driver launches it, for the turns print mode
+ * cannot carry. Never one of the engines on offer: it is this driver's
+ * own way to run such a turn, under this engine's name. Full access is
+ * agy's flag, as print mode has it; every other turn opens in agy's
+ * default mode, so what agy would ask about goes to the approval gate,
+ * which answers it as the agent's approvals say. */
+export const AGY_ACP: AcpSpec = {
+  kind: DRIVER_KIND,
+  name: "Antigravity",
+  command: "agy",
+  args: ["acp"],
+  turnArgs: ({ fullAuto, fullAccess }) => (fullAuto || fullAccess ? ["--dangerously-skip-permissions"] : []),
+  permissionModes: { default: "default", fullAuto: "default" },
+  install: installCommand("antigravity") ?? "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+  signIn: "run `agy` once to sign in with Google",
+  models: MODELS,
+};
+
+/** What of a turn's integrations agy is handed: its connected apps and
+ * its MCP servers, exactly as the harness granted them, and nothing else.
+ * The browser and the computers stay out (the adapter claims no screens),
+ * so this turn is never given what its agent was told it does not have.
+ * Null when there is neither, and the turn stays in print mode. */
+export function agyIntegrations(turn: Pick<SendTurnInput, "integrations">): SendTurnInput["integrations"] | null {
+  const composio = turn.integrations?.composio?.key ? turn.integrations.composio : undefined;
+  const mcpServers = turn.integrations?.mcpServers?.length ? turn.integrations.mcpServers : undefined;
+  if (!composio && !mcpServers) return null;
+  return { ...(composio ? { composio } : {}), ...(mcpServers ? { mcpServers } : {}) };
+}
+
 /** A request's tokens as agy counts them, cache reads as input. */
 function tokensOf(usage: any) {
   return {
@@ -194,6 +235,21 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
     const running = new Map<string, { turnId: string; abort: () => void; cleanup: () => Promise<boolean> }>();
     /** Every engine process this instance started, ended on dispose (engine-processes.ts). */
     const engines = new EngineProcesses();
+    // The turns that carry integrations, over `agy acp` (AGY_ACP), started
+    // the first time one comes. Its events are this engine's.
+    let overAcp: ProviderInstance | null = null;
+    const acpTurns = async () => {
+      if (overAcp) return overAcp;
+      const made = await acpDriver(AGY_ACP).create({ ...input, config: { cli: config.cli, fullAuto: config.fullAuto } });
+      if (overAcp) {
+        void made.dispose();
+        return overAcp;
+      }
+      made.adapter.onEvent((event) => emit(event));
+      overAcp = made;
+      return made;
+    };
+    const busy = (threadId: string) => running.has(threadId) || Boolean(overAcp?.adapter.hasSession(threadId));
 
     // Whether this agy takes its prompt on stdin (1.1.15 and later), asked
     // of the CLI once. A version it does not print plainly is taken to be
@@ -259,9 +315,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (running.has(threadId)) throw new Error("a turn is already running on this thread");
-      const turnId = newId();
-      const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+      if (busy(threadId)) throw new Error("a turn is already running on this thread");
 
       freshenCatalog();
       // A model agy listed once and lists no longer fails every turn in
@@ -269,6 +323,19 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // is told. Only against a list agy itself gave: ours is a guess.
       const unlisted = Boolean(turn.model && models.checkedAt && !models.options.some((o) => o.id === turn.model));
       const model = unlisted ? models.default : turn.model;
+
+      // The agent's connected apps or MCP servers: a turn over `agy acp`,
+      // handed those and nothing more of the integrations.
+      const integrations = agyIntegrations(turn);
+      if (integrations) {
+        const acp = await acpTurns();
+        if (busy(threadId)) throw new Error("a turn is already running on this thread");
+        const { integrations: _all, ...rest } = turn;
+        return acp.adapter.sendTurn({ ...rest, model, integrations });
+      }
+
+      const turnId = newId();
+      const resume = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       // An agy elsewhere is not probed on this computer.
       const viaStdin = turn.place ? true : await readsStdin();
@@ -554,13 +621,19 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         provider: DRIVER_KIND,
         capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
-        interruptTurn: async (threadId) => running.get(threadId)?.abort(),
-        respondToRequest: async () => {
+        interruptTurn: async (threadId, turnId) => {
+          if (overAcp?.adapter.hasSession(threadId)) return overAcp.adapter.interruptTurn(threadId, turnId);
+          running.get(threadId)?.abort();
+        },
+        // only a turn over `agy acp` can ask anything
+        respondToRequest: async (threadId, requestId, decision) => {
+          if (overAcp?.adapter.hasSession(threadId)) return overAcp.adapter.respondToRequest(threadId, requestId, decision);
           throw new Error("Antigravity's print mode has no permission channel");
         },
-        hasSession: (threadId) => running.has(threadId),
+        hasSession: (threadId) => busy(threadId),
         stopAll: async () => {
           for (const turn of running.values()) turn.abort();
+          await overAcp?.adapter.stopAll();
         },
         onEvent: (listener) => {
           listeners.add(listener);
@@ -574,7 +647,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         listeners.clear();
         catalogListeners.clear();
         await engines.end();
-        await Promise.all(turns.map((turn) => turn.cleanup()));
+        await Promise.all([...turns.map((turn) => turn.cleanup()), overAcp?.dispose()]);
       },
     };
   },
