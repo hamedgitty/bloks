@@ -1555,7 +1555,6 @@
   "chatView.staysOpen": "“{title}”保持打开",
   "chatView.stillWorking": "“{title}”仍在工作。",
   "chatView.stopBeforeClosing": "关闭前请先停止",
-  "chatView.takeMeetingNotes": "记录会议笔记",
   "chatView.telegramDelegate": "来自 {name} 的消息（Telegram，完全访问）",
   "chatView.telegramFrom": "来自 {name} 的消息（Telegram）",
   "chatView.telegramSent.failed": "发给 {name}（Telegram）：失败",

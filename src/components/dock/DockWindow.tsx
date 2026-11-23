@@ -13,11 +13,12 @@ import { api } from "@/state/store";
 import { chatKey, dock, placeIn, useDockState } from "@/lib/dock";
 import { t } from "@/lib/i18n";
 import { FilesPanel } from "./FilesPanel";
+import { DockedBrowser, refreshBrowserState } from "@/components/browser/BrowserPanel";
 import { ChangesPanel, useLaneChanges } from "./ChangesPanel";
 import { TasksPanel, useBackgroundTasks } from "./TasksPanel";
 import type { DockWindowPanel } from "@/lib/dockWindow";
 
-const TITLES = { docs: "dock.docs.label", changes: "dock.changes.label", tasks: "dock.tasks.label" } as const;
+const TITLES = { docs: "dock.docs.label", changes: "dock.changes.label", tasks: "dock.tasks.label", browser: "dock.browser.label" } as const;
 
 export function DockWindow({ panel, botId, laneId }: { panel: DockWindowPanel; botId: string; laneId: string }) {
   const [name, setName] = useState("");
@@ -47,6 +48,13 @@ export function DockWindow({ panel, botId, laneId }: { panel: DockWindowPanel; b
   const files = useLaneChanges(laneId, String(round), panel === "changes");
   const tasks = useBackgroundTasks(botId);
   useEffect(() => dock.setCurrent(key), [key]);
+  // a server's browser sends this window no events: its state is asked
+  // for again every moment while the window shows it
+  useEffect(() => {
+    if (panel !== "browser") return;
+    const timer = setInterval(refreshBrowserState, 1_500);
+    return () => clearInterval(timer);
+  }, [panel]);
 
   return (
     <div className="flex h-full flex-col bg-card">
@@ -59,6 +67,10 @@ export function DockWindow({ panel, botId, laneId }: { panel: DockWindowPanel; b
           <div className="m-auto max-w-sm px-6 text-center text-body text-muted-foreground">{t("terminalWindow.thisAgentIsNotHere")}</div>
         ) : !name ? null : panel === "docs" ? (
           <FilesPanel placeKey={key} place={place} shown botId={botId} />
+        ) : panel === "browser" ? (
+          // the browser with its own tabs, the page laid over this window
+          // in the desktop app (electron/dock-window.mjs)
+          <DockedBrowser shown agent={{ id: botId, name }} />
         ) : panel === "changes" ? (
           <ChangesPanel placeKey={key} threadId={laneId} files={files} shown />
         ) : (

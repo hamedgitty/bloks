@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { toast } from "@/components/ui/toast";
 import { Tip } from "@/components/ui/tooltip";
 import { openableExtensions, type BrowserExtensionRow, type ExtensionPage, type ExtensionViewState } from "@/lib/browserExtensions";
-import { api, useStore } from "@/state/store";
+import { api, useOptionalStore } from "@/state/store";
 import { t } from "@/lib/i18n";
 
 /** Where the extensions are and how one's page opens: the app's own
@@ -54,7 +54,8 @@ const TRIGGER =
   "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.96] data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 export function ExtensionsMenu({ source, onOpened }: { source: ExtensionSource; onOpened?: (view: ExtensionViewState) => void }) {
-  const { dispatch } = useStore();
+  // a window of its own has no store, and no settings to open
+  const dispatch = useOptionalStore()?.dispatch;
   const trigger = useRef<HTMLButtonElement>(null);
   const [rows, setRows] = useState<ReturnType<typeof openableExtensions> | null>(null);
 
@@ -111,7 +112,9 @@ export function ExtensionsMenu({ source, onOpened }: { source: ExtensionSource; 
           ))
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>{t("browserPanel.manageExtensions")}</DropdownMenuItem>
+        {dispatch && (
+          <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>{t("browserPanel.manageExtensions")}</DropdownMenuItem>
+        )}
         <p className="px-2.5 pb-1.5 pt-1 text-small text-pretty text-muted-foreground">{t("browserPanel.extensionsPrivate")}</p>
       </DropdownMenuContent>
     </DropdownMenu>

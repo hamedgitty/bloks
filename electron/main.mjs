@@ -69,7 +69,7 @@ import {
 } from "./hosting-move.mjs";
 import { HOSTED_TARGET, OWN_LOCAL_KINDS, ServerAsks, othersFor, pairRefusal } from "./server-line.mjs";
 import { terminalQuery } from "./terminal-window.mjs";
-import { dockWindowQuery } from "./dock-window.mjs";
+import { dockWindowQuery, isBrowserWindowQuery } from "./dock-window.mjs";
 import { conversationTarget, createNotch, notchPlatform } from "./notch.mjs";
 import { closeHides, trayOn, traySize } from "./tray.mjs";
 import { createQuitGuard, createQuitHint, isQuitKey } from "./quit-guard.mjs";
@@ -3098,6 +3098,11 @@ function watchWindowForBrowser(win) {
       placeTabs(held);
     }
   });
+  // the pages leave a closing window before it goes, so they are never
+  // taken down with it, and wait for the next panel to say where it is
+  win.once("close", () => {
+    for (const held of browsers.values()) if (held.win === win) detachBrowser(held);
+  });
   win.once("closed", () => {
     for (const held of browsers.values()) if (held.win === win) held.win = null;
   });
@@ -3224,10 +3229,16 @@ async function openExtensionPage(event, slug, page, anchor) {
   return { ok: true };
 }
 
+/** A window the browser's pages may be laid over: a workspace's own, or
+ * the browser's window of its own (dock-window.mjs). */
+function browserMayShowIn(win) {
+  return isWorkspaceWindow(win) || (Boolean(win) && !win.isDestroyed() && isBrowserWindowQuery(terminalWins.get(win)));
+}
+
 handle("browser:bounds", (event, rect) => {
   const id = senderWorkspace(event);
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!id || !win || !isWorkspaceWindow(win)) return null;
+  if (!id || !win || !browserMayShowIn(win)) return null;
   const held = browserFor(id);
   if (!held) return null;
   watchWindowForBrowser(win);

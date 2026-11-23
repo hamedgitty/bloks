@@ -29,3 +29,29 @@ export function useDockActions(panel: DockPanel): HTMLElement | null {
     () => null,
   );
 }
+
+// ── a pane expanded over the conversation ─────────────────────────────
+
+const expandedPlaces = new Set<string>();
+
+/** Said by the right pane as it expands over its conversation and as it
+ * goes back: the conversation's header gives its buttons' place to the
+ * pane's own then, so they are not shown twice. */
+export function setDockExpanded(key: string, on: boolean): void {
+  if (on === expandedPlaces.has(key)) return;
+  if (on) expandedPlaces.add(key);
+  else expandedPlaces.delete(key);
+  for (const listener of listeners) listener();
+}
+
+/** Whether a conversation's right pane is expanded over it. */
+export function useDockExpanded(key: string): boolean {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+    () => expandedPlaces.has(key),
+    () => false,
+  );
+}

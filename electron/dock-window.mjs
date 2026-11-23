@@ -6,11 +6,16 @@
 // The page asks with a panel's name and two ids, and that is all it can
 // ask with: a panel this list does not have, or an id that is not one, is
 // refused rather than pasted into an address the window will load. The
-// terminal has its own window (terminal-window.mjs); the browser and the
-// computer draw over the window they belong to, and stay there.
+// terminal has its own window (terminal-window.mjs). The browser's window
+// is the one panel window its pages may be laid over (main.mjs,
+// browserMayShowIn): they move into it while it is open, and go back to
+// the main window's panel once it closes. The computer stays where it is.
 
 /** The panels that open in a window of their own. */
-export const DOCK_WINDOW_PANELS = ["docs", "changes", "tasks"];
+export const DOCK_WINDOW_PANELS = ["docs", "changes", "tasks", "browser"];
+
+/** Whether a panel window's address is the browser's. */
+export const isBrowserWindowQuery = (query) => typeof query === "string" && query.startsWith("dock=browser&");
 
 const ID = /^[\w-]{1,64}$/;
 

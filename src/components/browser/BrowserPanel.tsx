@@ -20,7 +20,7 @@
 // there is no browser, only news of the Mac's: a strip in the agent's
 // conversation, with a small live picture when the Mac can send one.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { api, useStore } from "@/state/store";
+import { api, useOptionalStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import {
   ArrowLeft,
@@ -114,6 +114,10 @@ import type { ExtensionViewState } from "@/lib/browserExtensions";
 /** The server's word on the browser, for a page that does not have the
  * app's own; its "browser.app" frames keep it fresh after this. */
 const loadFromServer = () => api("/api/browser");
+
+/** The browser's state asked for again: for a window of its own, which
+ * hears no events from a server's browser and asks on a timer instead. */
+export const refreshBrowserState = () => refreshBrowser(loadFromServer);
 
 /** The browser's state, wherever this page is. */
 export function useBrowserState(): AppBrowserState | null {
@@ -271,7 +275,8 @@ function BrowserPanel({
 }) {
   const state = useBrowserState();
   const { missing } = useBrowserWhere();
-  const { state: store } = useStore();
+  // in a window of its own there is no store: no faces, no settings
+  const store = useOptionalStore()?.state;
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const page = useRef<HTMLDivElement>(null);
   const over = useSomethingOver(root, !onServer);
@@ -369,7 +374,7 @@ function BrowserPanel({
   return (
     <div ref={setRoot} role="region" aria-label={t("browserPanel.bloksBrowser")} className="flex h-full min-h-0 w-full min-w-0 flex-col bg-card">
       <div hidden={flat} className="flex h-[38px] shrink-0 items-center gap-1 px-1.5">
-        <Tabs tabs={tabs} activeId={state?.activeTabId ?? null} faces={store.bots} nameOf={nameOf} />
+        <Tabs tabs={tabs} activeId={state?.activeTabId ?? null} faces={store?.bots ?? []} nameOf={nameOf} />
         <HeaderButton label={t("browserPanel.newTab")} disabled={absent} onClick={() => void act("newTab")}>
           <Plus size={16} />
         </HeaderButton>
@@ -651,7 +656,7 @@ function BrowserMore({
   onScope: (next: TabScope) => void;
   hidden: number;
 }) {
-  const { dispatch } = useStore();
+  const dispatch = useOptionalStore()?.dispatch;
   const page = hostLabel(url) ? url : undefined;
   const viewport = useViewport();
   return (
@@ -703,10 +708,12 @@ function BrowserMore({
           </DropdownMenuCheckboxItem>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>
-          <Settings />
-          {t("browserPanel.browserSettings")}
-        </DropdownMenuItem>
+        {dispatch && (
+          <DropdownMenuItem onSelect={() => dispatch({ type: "toggleAppSettings", open: true, page: "browser" })}>
+            <Settings />
+            {t("browserPanel.browserSettings")}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onSelect={() => void clearBrowsing()} className="text-destructive focus:text-destructive">
           <Trash2 />
           {t("browserPanel.clearData")}
@@ -1242,7 +1249,7 @@ function Tabs({
 }: {
   tabs: BrowserTab[];
   activeId: string | null;
-  faces: ReturnType<typeof useStore>["state"]["bots"];
+  faces: NonNullable<ReturnType<typeof useOptionalStore>>["state"]["bots"];
   nameOf: (botId: string, fallback: string) => string;
 }) {
   const ids = tabs.map((t) => t.id);

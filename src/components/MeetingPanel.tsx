@@ -12,7 +12,7 @@
 // belongs to one of your agents can be handed to it from here with one
 // press.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines } from "@/components/icons";
+import { Mic, NotebookPen } from "@/components/icons";
 import { CircleStop } from "@/components/icons";
 import { Loader2 } from "@/components/icons";
 import { Send } from "@/components/icons";
@@ -109,7 +109,7 @@ interface PageListening {
   written: Promise<void>;
 }
 
-export function MeetingPanel({ bot }: { bot: Bot }) {
+export function MeetingPanel({ bot, docked = false }: { bot: Bot; docked?: boolean }) {
   const { state, dispatch } = useStore();
   const bridge = window.bloks;
   const { ears, macApp } = useEars();
@@ -325,30 +325,37 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
   const who = heardBy(ears);
 
   return (
-    <div className="absolute inset-0 z-20 flex animate-fade-in items-center justify-center bg-black/40 dark:bg-black/60" onClick={recording ? undefined : close}>
+    // in the side panel it is the panel itself, its tab its name; on its
+    // own, a dialog over the conversation
+    <div
+      className={docked ? "flex h-full min-h-0 flex-col bg-card" : "absolute inset-0 z-20 flex animate-fade-in items-center justify-center bg-black/40 dark:bg-black/60"}
+      onClick={docked || recording ? undefined : close}
+    >
       <div
-        className="flex max-h-[84%] w-[640px] max-w-[94vw] animate-pop-in flex-col overflow-hidden rounded-2xl border bg-popover shadow-2xl shadow-(color:--shadow-color)"
+        className={docked ? "flex min-h-0 flex-1 flex-col" : "flex max-h-[84%] w-[640px] max-w-[94vw] animate-pop-in flex-col overflow-hidden rounded-2xl border bg-popover shadow-2xl shadow-(color:--shadow-color)"}
         onClick={(e) => e.stopPropagation()}
-        role="dialog"
+        role={docked ? "region" : "dialog"}
         aria-label={t("meetingPanel.meetingNotes")}
       >
-        <div className="flex items-center justify-between border-b px-5 py-4">
+        <div className={cn("flex items-center justify-between border-b", docked ? "px-4 py-3" : "px-5 py-4")}>
           <div>
-            <div className="flex items-center gap-2 text-title font-semibold text-foreground">
-              <AudioLines size={17} className="text-muted-foreground" /> {t("meetingPanel.meetingNotes")}
-            </div>
-            <div className="mt-0.5 text-body text-muted-foreground">
+            {!docked && (
+              <div className="flex items-center gap-2 text-title font-semibold text-foreground">
+                <NotebookPen size={17} className="text-muted-foreground" /> {t("meetingPanel.meetingNotes")}
+              </div>
+            )}
+            <div className={cn("text-body text-muted-foreground", !docked && "mt-0.5")}>
               {onMac ? t("meetingPanel.listensOnThisMac", { name: bot.name }) : t("meetingPanel.listensThroughTheMicrophone", { name: bot.name })}
             </div>
           </div>
-          {!recording && (
+          {!recording && !docked && (
             <Button variant="ghost" size="icon-sm" aria-label={t("common.close")} onClick={close}>
               <X size={16} />
             </Button>
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div className={cn("min-h-0 flex-1 overflow-y-auto", docked ? "px-4 py-3" : "px-5 py-4")}>
           {!available ? (
             <div className="px-4 py-10 text-center text-body text-muted-foreground">
               {ears.kind === "none" && missingText(ears.missing)}
@@ -438,7 +445,7 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
                           <button
                             onClick={() => {
                               dispatch({ type: "selectTask", botId: bot.id, taskId: m.laneId! });
-                              close();
+                              if (!docked) close();
                             }}
                             className="mt-2 text-small text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                           >
@@ -460,14 +467,14 @@ export function MeetingPanel({ bot }: { bot: Bot }) {
         </div>
 
         {available && (
-          <div className="flex justify-end border-t px-5 py-3">
+          <div className={cn("flex justify-end border-t", docked ? "px-4 py-3" : "px-5 py-3")}>
             {recording ? (
               <Button variant="destructive" disabled={stopping} onClick={() => void stop()}>
                 {stopping ? <Loader2 size={14} className="animate-spin" /> : <CircleStop size={14} />} {t("meetingPanel.stopAndWriteItUp")}
               </Button>
             ) : (
               <Button disabled={starting} onClick={() => void start()}>
-                {starting ? <Loader2 size={14} className="animate-spin" /> : <AudioLines size={14} />} {t("meetingPanel.startListening")}
+                {starting ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />} {t("meetingPanel.startListening")}
               </Button>
             )}
           </div>

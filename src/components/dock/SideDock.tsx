@@ -41,7 +41,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { useFadeScroll } from "@/lib/fadeScroll";
 import { createPortal } from "react-dom";
 import { AppWindow, Collapse, DockBottom, DockLeft, DockRight, DockTop, Expand, Minimize, PanelBottom, PanelLeft, PanelRight, PanelTop, Plus, X } from "@/components/icons";
-import { setDockActions } from "@/lib/dockActions";
+import { setDockActions, setDockExpanded } from "@/lib/dockActions";
 import { Tip } from "@/components/ui/tooltip";
 import { HeaderButton } from "@/components/terminal/TerminalMenus";
 import {
@@ -191,7 +191,11 @@ export function SideDock({
   headSlot,
   side = "right",
   canMove = true,
+  expandedSlot,
 }: {
+  /** Where its own buttons go while it is expanded over the conversation:
+   * the conversation's top row, in place of its buttons (ChatView.tsx). */
+  expandedSlot?: HTMLElement | null;
   placeKey: string;
   /** The panels this conversation offers, in any order. */
   panes: readonly DockPane[];
@@ -383,6 +387,48 @@ export function SideDock({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+  // Expanded over a conversation whose top row has room for them (the
+  // right pane, ChatView.tsx), these go up there, in place of the
+  // conversation's own buttons, so the panel icon is not shown twice.
+  const moveUp = Boolean(expanded && expandedSlot && side === "right" && visible);
+  const cluster = (
+    <>
+      {/* the panel in front's own buttons, then minimize, expand (and its
+            menu on hover) and the pane's own icon, which hides it */}
+        <span ref={setActionSlot} className="flex shrink-0 items-center gap-1 empty:hidden" />
+        {front && (
+          <HeaderButton
+            label={canMinimize(place, front.id) ? t("dock.minimize") : t("dock.minimizeFull")}
+            disabled={front.minimizable === false || !canMinimize(place, front.id)}
+            onClick={() => {
+              setExpanded(false);
+              dock.minimize(placeKey, front.id);
+            }}
+          >
+            <Minimize size={16} />
+          </HeaderButton>
+        )}
+        {front && (
+          <ExpandControl
+            expanded={expanded}
+            onToggle={() => setExpanded(!expanded)}
+            side={side}
+            canMove={canMove}
+            onMove={(to) => dock.move(placeKey, front.id, to)}
+            popOut={front.popOut}
+            tabs={front.items?.length ?? 1}
+          />
+        )}
+        <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey, side)}>
+          {SIDE_ICON[side]}
+        </HeaderButton>
+    </>
+  );
+  useEffect(() => {
+    if (side !== "right") return;
+    setDockExpanded(placeKey, expanded && visible);
+    return () => setDockExpanded(placeKey, false);
+  }, [placeKey, side, expanded, visible]);
   const head = (
     <div className={cn("flex shrink-0 items-center gap-1 px-2", up ? "h-full border-l bg-card" : "h-[42px] border-b")}>
       <div
@@ -415,35 +461,7 @@ export function SideDock({
       {/* right after the last tab, and first when there is none */}
       {plus}
       <span className="flex-1" />
-      {/* the panel in front's own buttons, then minimize, expand (and its
-          menu on hover) and the pane's own icon, which hides it */}
-      <span ref={setActionSlot} className="flex shrink-0 items-center gap-1 empty:hidden" />
-      {front && (
-        <HeaderButton
-          label={canMinimize(place, front.id) ? t("dock.minimize") : t("dock.minimizeFull")}
-          disabled={front.minimizable === false || !canMinimize(place, front.id)}
-          onClick={() => {
-            setExpanded(false);
-            dock.minimize(placeKey, front.id);
-          }}
-        >
-          <Minimize size={16} />
-        </HeaderButton>
-      )}
-      {front && (
-        <ExpandControl
-          expanded={expanded}
-          onToggle={() => setExpanded(!expanded)}
-          side={side}
-          canMove={canMove}
-          onMove={(to) => dock.move(placeKey, front.id, to)}
-          popOut={front.popOut}
-          tabs={front.items?.length ?? 1}
-        />
-      )}
-      <HeaderButton label={t("dock.hide")} onClick={() => dock.hide(placeKey, side)}>
-        {SIDE_ICON[side]}
-      </HeaderButton>
+      {!moveUp && cluster}
     </div>
   );
   // the right pane with no tab in front: what it can show, one row each
@@ -500,6 +518,7 @@ export function SideDock({
   return (
     <>
       {up && headSlot && createPortal(head, headSlot)}
+      {moveUp && createPortal(<div className="flex items-center gap-1">{cluster}</div>, expandedSlot!)}
       {(side === "right" || side === "bottom") && edge}
       <aside
         ref={setHolder}

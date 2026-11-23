@@ -1617,7 +1617,6 @@
   "chatView.staysOpen": "„{title}“ bleibt geöffnet",
   "chatView.stillWorking": "„{title}“ arbeitet noch.",
   "chatView.stopBeforeClosing": "Vor dem Schließen stoppen",
-  "chatView.takeMeetingNotes": "Besprechungsnotizen erstellen",
   "chatView.telegramDelegate": "Nachricht von {name} (Telegram, voller Zugriff)",
   "chatView.telegramFrom": "Nachricht von {name} (Telegram)",
   "chatView.telegramSent.failed": "An {name} (Telegram): fehlgeschlagen",

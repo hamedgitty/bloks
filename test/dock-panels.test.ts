@@ -15,7 +15,7 @@ import { localUrls } from "../server/terminal.ts";
 import { MAX_RECENT, noteRecent, parseRecent, previewsFrom } from "../src/lib/previews.ts";
 import { backgroundTasks, runningCount } from "../src/lib/backgroundTasks.ts";
 import { FADE, fadeMask, wheelToSideways } from "../src/lib/fadeScroll.ts";
-import { dockWindowQuery, dockWindowTarget } from "../electron/dock-window.mjs";
+import { dockWindowQuery, dockWindowTarget, isBrowserWindowQuery } from "../electron/dock-window.mjs";
 import { dockWindowFor } from "../src/lib/dockWindow.ts";
 import { gitChanges, gitFileDiff, inSkippedDir, parseNumstat, parsePorcelainV2, parseUnifiedDiff, safeRelativePath } from "../server/git-changes.ts";
 
@@ -270,7 +270,10 @@ describe("a strip of tabs past its room", () => {
 describe("a panel in a window of its own", () => {
   test("only a panel that opens alone, for ids that are ids, becomes an address", () => {
     assert.equal(dockWindowQuery({ panel: "changes", botId: "b-1", laneId: "l_2" }), "dock=changes&agent=b-1&lane=l_2");
-    assert.equal(dockWindowQuery({ panel: "browser", botId: "b", laneId: "l" }), null, "the browser stays over its window");
+    assert.equal(dockWindowQuery({ panel: "browser", botId: "b", laneId: "l" }), "dock=browser&agent=b&lane=l", "the browser opens alone too");
+    assert.equal(isBrowserWindowQuery("dock=browser&agent=b&lane=l"), true);
+    assert.equal(isBrowserWindowQuery("dock=changes&agent=b&lane=l"), false);
+    assert.equal(dockWindowQuery({ panel: "computer", botId: "b", laneId: "l" }), null, "the computer stays where it is");
     assert.equal(dockWindowQuery({ panel: "docs", botId: "../x", laneId: "l" }), null);
     assert.equal(dockWindowQuery({ panel: "docs", botId: "b", laneId: "l&x=1" }), null);
     assert.equal(dockWindowTarget("docs"), null);
@@ -278,6 +281,7 @@ describe("a panel in a window of its own", () => {
 
   test("the page reads the address back the same way", () => {
     assert.deepEqual(dockWindowFor("?dock=tasks&agent=b&lane=l"), { panel: "tasks", botId: "b", laneId: "l" });
+    assert.deepEqual(dockWindowFor("?dock=browser&agent=b&lane=l"), { panel: "browser", botId: "b", laneId: "l" });
     assert.equal(dockWindowFor("?dock=terminal&agent=b&lane=l"), null);
     assert.equal(dockWindowFor("?dock=docs&agent=b%2F..&lane=l"), null);
   });

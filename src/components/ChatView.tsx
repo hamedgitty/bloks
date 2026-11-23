@@ -25,6 +25,7 @@ import { act as browserAct, BrowsingOnMac, DockedBrowser, MiniBrowser, MiniViewp
 import { Activity, Bot as BotIcon, Eraser, FileDiff, Folder, Globe, Hourglass, PanelRight, Phone, Plus, Settings } from "@/components/icons";
 import { focusedSide, SideDock, toggleExpand, type DockPane } from "./dock/SideDock";
 import { MiniDock } from "./dock/MiniDock";
+import { useDockExpanded } from "@/lib/dockActions";
 import { useExtensionsPane } from "./extensions/ExtensionDock";
 import { FilesPanel } from "./dock/FilesPanel";
 import { ChangesPanel, useLaneChanges } from "./dock/ChangesPanel";
@@ -64,7 +65,7 @@ import { askForFold, type TraceAsk } from "@/lib/traceView";
 import { MeetingPanel } from "./MeetingPanel";
 import { meetingNotesHere } from "@/lib/thisComputer";
 import { useEars } from "@/lib/hearingWords";
-import { AudioLines } from "@/components/icons";
+import { NotebookPen } from "@/components/icons";
 import { ForwardDialog, excerptOf, type ReplyDraft } from "./MessageActions";
 import { SelectionQuote } from "./chat/SelectionQuote";
 import { listenForReply } from "@/lib/replyHandoff";
@@ -767,6 +768,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   const headerSide = Math.max(actionsWidth + 24, 72);
   // a call with a voiced agent, started from the menu after its name
   const [calling, setCalling] = useState(false);
+  // the side panel expanded over the conversation takes its buttons' place
+  const dockExpanded = useDockExpanded(chatKey(bot.id, bot.activeTaskId ?? bot.threadId));
+  const [expandedSlot, setExpandedSlot] = useState<HTMLDivElement | null>(null);
   const focusBox = () =>
     requestAnimationFrame(() => {
       // the composer's field is the one drawn over its skill marks
@@ -916,7 +920,7 @@ export function ChatView({ bot }: { bot: Bot }) {
   // a panel in a window of its own, in the desktop app (DockWindow.tsx)
   // a popup in a browser tab, as the terminal's is (terminal/TerminalDock.tsx),
   // but not from the web app reaching another computer
-  const panelWindow = (panel: "docs" | "changes" | "tasks") =>
+  const panelWindow = (panel: "docs" | "changes" | "tasks" | "browser") =>
     window.bloks?.dockWindow
       ? () => void window.bloks!.dockWindow!({ panel, botId: bot.id, laneId })
       : !window.bloks && !window.bloksWeb
@@ -978,6 +982,17 @@ export function ChatView({ bot }: { bot: Bot }) {
             miniActions: () => <MiniViewport />,
             miniAspect: browserMiniAspect,
             miniLabel: pageInFront ? tabLabel(pageInFront) || undefined : undefined,
+            // its own window, with its tabs: the panel lets it go, so the
+            // pages move to the window (electron/dock-window.mjs)
+            popOut: (() => {
+              const open = panelWindow("browser");
+              return open
+                ? () => {
+                    dock.closeTab(dockKey, "browser");
+                    open();
+                  }
+                : undefined;
+            })(),
           },
         ]
       : []),
@@ -1030,6 +1045,20 @@ export function ChatView({ bot }: { bot: Bot }) {
         />
       ),
     },
+    // meeting notes need something to hear them (src/lib/hearing.ts), and a
+    // hosted workspace refuses them; kept drawn while another tab is in
+    // front, or closed, so a meeting being heard goes on being heard
+    ...(meetingNotesHere(ears.kind, state.config?.hosted?.on, macApp)
+      ? [
+          {
+            id: "meeting" as const,
+            label: t("chatView.meetingNotes"),
+            icon: <NotebookPen size={15} />,
+            keepAlive: true,
+            render: () => <MeetingPanel bot={bot} docked />,
+          },
+        ]
+      : []),
     {
       id: "computer",
       label: t("dock.computer.label"),
@@ -1395,24 +1424,11 @@ export function ChatView({ bot }: { bot: Bot }) {
         </DropdownMenu>
     </div>
   );
-  // Two buttons, as the desktop apps that keep panes beside a chat have
-  // it: meeting notes, and the side panel, which holds everything else
-  // (the terminal, the browser, the changes) as tabs.
+  // One button, as the desktop apps that keep panes beside a chat have
+  // it: the side panel, which holds everything else (the terminal, the
+  // browser, the changes, meeting notes) as tabs.
   const headerActions = (
         <div ref={actionsRef} className={cn("flex shrink-0 items-center gap-1.5", titleSlot ? "pr-2" : "ml-auto")}>
-          {/* meeting notes need something to hear them (src/lib/hearing.ts),
-              and a hosted workspace refuses them */}
-          {meetingNotesHere(ears.kind, state.config?.hosted?.on, macApp) && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => dispatch({ type: "openMeeting", botId: bot.id })}
-              title={t("chatView.takeMeetingNotes")}
-              aria-label={t("chatView.meetingNotes")}
-            >
-              <AudioLines size={17} />
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="icon"
@@ -1427,7 +1443,6 @@ export function ChatView({ bot }: { bot: Bot }) {
               <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-brand" />
             )}
           </Button>
-          {calling && <CallOverlay bot={bot} onClose={() => setCalling(false)} />}
         </div>
   );
 
@@ -1448,7 +1463,9 @@ export function ChatView({ bot }: { bot: Bot }) {
         ? createPortal(
             <div className="flex h-full min-w-0 flex-1 items-center">
               <div className="flex min-w-0 flex-1 items-center pr-2">{identityButton(true)}</div>
-              {headerActions}
+              {/* the side panel expanded over the conversation puts its own
+                  buttons here, in place of these (dock/SideDock.tsx) */}
+              {dockExpanded ? <div ref={setExpandedSlot} className="flex shrink-0 items-center pr-2" /> : headerActions}
               <div ref={setDockHead} className="h-full w-0 shrink-0 overflow-hidden" />
             </div>,
             titleSlot,
@@ -1703,7 +1720,8 @@ export function ChatView({ bot }: { bot: Bot }) {
       />
       <SideDock side="bottom" placeKey={dockKey} panes={dockPanes} onPick={pickPanel} />
       </div>
-      <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} headSlot={titleSlot ? dockHead : null} />
+      <SideDock placeKey={dockKey} panes={dockPanes} onPick={pickPanel} headSlot={titleSlot ? dockHead : null} expandedSlot={titleSlot ? expandedSlot : null} />
+      {calling && <CallOverlay bot={bot} onClose={() => setCalling(false)} />}
       </div>
       {terminal.overlay}
       {terminal.panel}
@@ -1716,7 +1734,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           onClose={() => setExchange(null)}
         />
       )}
-      {state.meetingFor === bot.id && <MeetingPanel bot={bot} />}
+
       {forwarding && (
         <ForwardDialog
           message={forwarding.message}

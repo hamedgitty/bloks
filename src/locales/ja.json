@@ -1555,7 +1555,6 @@
   "chatView.staysOpen": "「{title}」は開いたままになります",
   "chatView.stillWorking": "「{title}」は作業中です。",
   "chatView.stopBeforeClosing": "閉じる前に停止してください",
-  "chatView.takeMeetingNotes": "ミーティングのメモを取る",
   "chatView.telegramDelegate": "{name} からのメッセージ（Telegram、フルアクセス）",
   "chatView.telegramFrom": "{name} からのメッセージ（Telegram）",
   "chatView.telegramSent.failed": "{name} へ（Telegram）: 失敗",

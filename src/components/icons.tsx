@@ -267,6 +267,16 @@ const ViewportLaptopShape = drawn(
     <path d="M3 18.75h18" />
   </>,
 );
+// Meeting notes: a notepad, its lines, and a pen across its corner, so it
+// reads as notes and never as the sound it is written from.
+const NotebookPenShape = drawn(
+  "NotebookPen",
+  <>
+    <path d="M13.5 4.5H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25h10.5a2.25 2.25 0 0 0 2.25-2.25V12" />
+    <path d="M8.25 9.75h4.5M8.25 13.5h6M8.25 17.25h3" />
+    <path d="M18.4 3.85a1.6 1.6 0 0 1 2.25 2.25l-5.4 5.4-2.85.6.6-2.85 5.4-5.4Z" />
+  </>,
+);
 const PanelBottomShape = drawn(
   "PanelBottom",
   <>
@@ -429,6 +439,7 @@ export const PanelSplit = PanelSplitShape;
 export const PanelTop = PanelTopShape;
 export const PanelLeft = PanelLeftShape;
 export const Expand = ExpandShape;
+export const NotebookPen = NotebookPenShape;
 export const ViewportResponsive = ViewportResponsiveShape;
 export const ViewportPhone = ViewportPhoneShape;
 export const ViewportTablet = ViewportTabletShape;
