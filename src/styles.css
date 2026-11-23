@@ -734,14 +734,14 @@
   inset: 0 0 10px calc(-1 * var(--hair));
   border-radius: 10px 10px 0 0;
   padding: var(--hair) 0 0 var(--hair);
-  background: linear-gradient(to top, rgb(203 108 230 / 0.45), rgb(92 225 230 / 0.85) 80%);
+  background: linear-gradient(to top, rgb(203 108 230 / 0.18), rgb(92 225 230 / 0.42) 85%);
   -webkit-mask:
-    linear-gradient(to right, #000 12%, transparent 70%),
+    linear-gradient(to right, #000 6%, transparent 45%),
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   -webkit-mask-composite: source-in, xor;
   mask:
-    linear-gradient(to right, #000 12%, transparent 70%),
+    linear-gradient(to right, #000 6%, transparent 45%),
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: intersect, exclude;
@@ -756,8 +756,8 @@
   background: radial-gradient(
     circle at 0 0,
     transparent calc(10px - var(--hair) - 0.35px),
-    rgb(203 108 230 / 0.4) calc(10px - var(--hair)),
-    rgb(203 108 230 / 0.4) 10px,
+    rgb(203 108 230 / 0.15) calc(10px - var(--hair)),
+    rgb(203 108 230 / 0.15) 10px,
     transparent 10.35px
   );
 }
@@ -768,7 +768,7 @@
   width: max(0px, calc(var(--reach, 0px) - 10px));
   height: var(--hair);
   /* nothing where it leaves the sidebar, gathering toward the curve */
-  background: linear-gradient(to right, rgb(203 108 230 / 0), rgb(203 108 230 / 0.35));
+  background: linear-gradient(to right, rgb(203 108 230 / 0), rgb(203 108 230 / 0.12));
 }
 
 /* The edge of a page's column (SideColumn.tsx): the brand gradient as a
