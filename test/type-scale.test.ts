@@ -26,3 +26,20 @@ test("every size cn knows is defined in the stylesheet, and the other way round"
   const merged = readFileSync(new URL("../src/lib/cn.ts", import.meta.url), "utf8");
   for (const size of SCALE) assert.match(merged, new RegExp(`"${size}"`));
 });
+
+// Inter has no emoji, so one in an agent's name is drawn by a fallback
+// font. Left to the system to pick, some systems picked one that drew
+// nothing, and the name started with a blank (GitHub 545). Each stack
+// names the color emoji fonts, after its generic family so a character
+// the text fonts cover is never drawn as an emoji.
+test("every font stack ends on the color emoji fonts, after its generic family", () => {
+  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const EMOJI = ["Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"];
+  for (const [name, generic] of [["sans", "sans-serif"], ["mono", "monospace"]] as const) {
+    const said = css.match(new RegExp(`--font-${name}:([^;]+);`))?.[1];
+    assert.ok(said, `--font-${name} is defined`);
+    const families = said.split(",").map((f) => f.trim().replace(/^"|"$/g, ""));
+    assert.deepEqual(families.slice(-EMOJI.length), EMOJI, `--font-${name} ends on the emoji fonts`);
+    assert.equal(families.indexOf(generic), families.length - EMOJI.length - 1, `--font-${name} names its emoji after ${generic}`);
+  }
+});

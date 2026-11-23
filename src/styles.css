@@ -206,9 +206,20 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  /* Each stack ends on the color emoji fonts, named. Inter has no emoji,
+     so an emoji in a name (or anywhere else) is drawn by whatever font
+     the system falls back to, and on some systems that fallback lands on
+     a font with an empty glyph for it: the name keeps the emoji's width
+     and shows nothing (GitHub 545). A symbol Inter does have, like the
+     bitcoin sign, never falls back, which is why it showed when the
+     emoji beside it did not. Named here, the emoji comes from the color
+     font on every platform. After the generic families, so a character
+     the text fonts cover is never drawn as an emoji. */
   --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
-    "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    "SF Pro Text", "Segoe UI", system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 
   /* The type scale: nine sizes, each with the leading it reads best at.
      Small text gets room between lines so dense lists still breathe;
