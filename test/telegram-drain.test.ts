@@ -10,6 +10,7 @@ import { test, type TestContext } from "node:test";
 import { startHarness } from "./helpers/server.ts";
 import { agentOn, idle, messagesOf, PICKUP, waitFor } from "./helpers/turns.ts";
 import { TelegramReturns } from "../server/telegram-returns.ts";
+import { extractUi } from "../server/genui.ts";
 import type { Message, Store } from "../server/store.ts";
 import { splitAttachments } from "../src/lib/attachments.ts";
 
@@ -687,6 +688,44 @@ test("a held request's files follow its answer, and only an answer that arrived"
   assert.equal(handed.length, 1, "no files after an answer that did not arrive");
 });
 
+
+test("a held request's answer carries the interface in its reply, not only the words around it (GitHub 547)", async (t) => {
+  const ui = ["```openui", "root = Card([answer])", 'answer = TextContent("Choose option B because it fits the requirement.")', "```"].join("\n");
+  const text = `Here is my recommendation.\n\n${ui}`;
+  const run = async (withoutComponents?: string[]) => {
+    const rows = [
+      { id: "request", role: "user", kind: "text", text: "ASK", queued: true, telegramReply: { chatId: CHAT, state: "queued" } },
+    ] as Message[];
+    const memory = {
+      bots: [{ tasks: [{ id: "lane" }], withoutComponents }],
+      messagesFor: () => rows,
+      patchMessages: (_lane: string, ids: string[], patch: (m: Message) => Partial<Message>) => rows.filter((m) => ids.includes(m.id)).map((m) => Object.assign(m, patch(m))),
+    } as unknown as Store;
+    const returns = new TelegramReturns(memory, () => ({ enabled: true, token: "TEST", chatIds: [CHAT] }), () => {}, () => {});
+    returns.bind("lane", ["request"], true);
+    rows.push({ id: "answer", at: 1, role: "bot", kind: "text", text, ui: extractUi(text) } as Message);
+    returns.finish("lane");
+    assert.ok(await waitFor(() => rows[0]!.telegramReply?.state === "sent"));
+  };
+  const bodies: any[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: Parameters<typeof fetch>[0], options?: RequestInit) => {
+    bodies.push(JSON.parse(String(options?.body)));
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }));
+  });
+
+  await run();
+  const sent = bodies.map((b) => b.text).join("\n");
+  assert.match(sent, /Here is my recommendation\./);
+  assert.match(sent, /Choose option B because it fits the requirement\./, "the recommendation itself reaches the chat");
+
+  // an agent that may not show interface still says something was left out
+  bodies.length = 0;
+  await run(["openui"]);
+  const limited = bodies.map((b) => b.text).join("\n");
+  assert.match(limited, /Here is my recommendation\./);
+  assert.doesNotMatch(limited, /Choose option B/);
+  assert.notEqual(limited.trim(), "Here is my recommendation.", "the words around it never pass for the whole answer");
+});
 
 test("removing an agent bot drops its queued Telegram message before drain releases", async (t) => {
   const f = await fixture(t);

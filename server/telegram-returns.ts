@@ -2,7 +2,8 @@
 // It belongs to that queued request, never to later turns in the lane.
 import type { Message, Store } from "./store.ts";
 import { send, TelegramError, type TelegramState } from "./telegram.ts";
-import { telegramReply, type TelegramText } from "./telegram-reply.ts";
+import { botWords, telegramReply, type TelegramText } from "./telegram-reply.ts";
+import { telegramOpenUi } from "./telegram-openui.ts";
 
 export interface TelegramReply {
   chatId: number;
@@ -114,7 +115,7 @@ export class TelegramReturns {
       const boundary = after ? transcript.findIndex((m) => m.id === after) : -1;
       const said = failure ? [] : transcript.slice(boundary + 1);
       const answer: TelegramText = failure !== undefined ? { text: failure, markdown: false } :
-        telegramReply(said, this.redact);
+        this.answerOf(laneId, said);
       // The text is captured before another turn can move the transcript.
       const run = this.say(laneId, group, chatId, answer, said);
       this.sends.add(run);
@@ -122,6 +123,25 @@ export class TelegramReturns {
         console.error("[bloks] Telegram return could not be recorded:", error);
       });
     }
+  }
+
+  /** A held request's answer reads as a live turn's does: interface in the
+   * reply is carried as text, within what the agent may show, so words
+   * around it never stand in for the whole answer (GitHub 547). A reply
+   * with no interface, or one the projection cannot read, is the plain
+   * reply as before. */
+  private answerOf(laneId: string, said: Message[]): TelegramText {
+    const reply = said.findLast(botWords);
+    if (reply) {
+      const owner = this.store.bots.find((bot) => bot.tasks.some((lane) => lane.id === laneId));
+      try {
+        const shown = telegramOpenUi(reply, owner?.withoutComponents, this.redact);
+        if (shown) return shown;
+      } catch {
+        // the plain reply below still goes
+      }
+    }
+    return telegramReply(said, this.redact);
   }
 
   private async say(laneId: string, requests: Message[], chatId: number, answer: TelegramText, said: Message[]) {
