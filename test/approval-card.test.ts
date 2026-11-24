@@ -69,6 +69,20 @@ test("an ACP title gives up the code in its backticks", () => {
   assert.deepEqual(readApproval(card("edit", "Edit `src/a.ts`"), ada).detail, { kind: "path", path: "src/a.ts" });
 });
 
+test("Antigravity's CommandLine and Path read as a command and a file, with the risky command warned about", () => {
+  const run = readApproval(card("execute", '{"CommandLine":"rm -rf build","Cwd":"/Users/sam/app"}'), ada);
+  assert.equal(run.verb, "wants to run a command");
+  assert.deepEqual(run.detail, { kind: "command", text: "rm -rf build" });
+  assert.ok(run.risk);
+  assert.deepEqual(run.scopes, []);
+
+  const read = readApproval(card("read", '{"Path":"/Users/sam/app/src/a.ts"}'), ada);
+  assert.deepEqual(read.detail, { kind: "path", path: "/Users/sam/app/src/a.ts" });
+  assert.equal(read.short, "a.ts");
+  assert.deepEqual(readApproval(card("read", '{"AbsolutePath":"/tmp/b.ts"}'), ada).detail, { kind: "path", path: "/tmp/b.ts" });
+  assert.deepEqual(readApproval(card("execute", '{"Command":"ls"}'), ada).detail, { kind: "command", text: "ls" });
+});
+
 test("a reason is shown as a sentence, and a summary that is only the tool's name as nothing", () => {
   const reason = readApproval(card("shell", "Run the test suite to check the change."), ada);
   assert.deepEqual(reason.detail, { kind: "text", text: "Run the test suite to check the change." });

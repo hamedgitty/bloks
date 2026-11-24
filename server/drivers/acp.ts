@@ -14,12 +14,15 @@
 //                            The spec says the agent then replays the whole
 //                            conversation as session/update; Bloks already
 //                            has that transcript, so those frames are dropped.
+//   session/resume        -> the same without the replay, for an agent that
+//                            names it (AcpSpec.resumeMethod).
 //   session/prompt        -> blocks for the turn, returns { stopReason, usage }
 //   session/update        <- streaming notifications (text, tools, thoughts)
 //   session/request_permission <- a real request we must answer
 //
 // A turn spawns a process and kills it on settle, the same as the codex
-// driver. Continuity comes from session/load with the stored id.
+// driver. Continuity comes from session/load (or the agent's
+// session/resume) with the stored id.
 import { type ChildProcess, spawn, execFile } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -122,6 +125,10 @@ export interface AcpSpec {
   /** Keep the resumed session's current effort when no explicit effort was
    * requested and the default effort for the model has not been learned yet. */
   keepResumedEffort?: boolean;
+  /** The turn result's inputTokens leaves out cache reads, which come
+   * apart as cachedReadTokens, so they are added back (Antigravity). Off
+   * for the others, whose inputTokens may already count them. */
+  addCachedReads?: boolean;
   /** Re-probe the model catalog from snapshot() when stale or previously failed. */
   reprobeCatalog?: boolean;
   /** The oldest release that speaks ACP the way this driver does. An
@@ -615,26 +622,52 @@ const ANTIGRAVITY_FALLBACK_MODELS: ModelCatalog = {
 const CATALOG_FRESH_MS = 10 * 60_000;
 const CATALOG_RETRY_MS = 60_000;
 
+/** A legacy print-mode Antigravity id, which carried the effort as a
+ * suffix (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`), as its base
+ * model and that effort. Null for an id without such a suffix. */
+export function splitAntigravityModel(model: string): { model: string; effort: Effort } | null {
+  const match = /^(.+)-(low|medium|high|xhigh|thinking)$/i.exec(model);
+  if (!match) return null;
+  const suffix = match[2].toLowerCase();
+  return { model: match[1], effort: suffix === "thinking" ? "high" : (suffix as Effort) };
+}
+
+/** The suffixed ids print mode offered whose effort is now a separate
+ * choice. Not every suffixed id was one: ACP still serves
+ * `gpt-oss-120b-medium` as a model of its own, so it is not listed. */
+const ANTIGRAVITY_PRINT_MODE_IDS = new Set([
+  "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+  "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "claude-opus-4-6-thinking",
+]);
+
+/** An agent saved on a legacy print-mode Antigravity id, moved onto the
+ * base model and the effort the suffix named, so the picker shows the
+ * model by its name and no older saved effort competes with the suffix.
+ * Null when the agent is not on Antigravity or its id is not one of
+ * those. Any other suffixed id is left alone: it may be a model in its
+ * own right, and one that is not still runs on its base (resolveAntigravityModel). */
+export function antigravityLegacyMove<S extends { instanceId: string; model: string }>(
+  agent: { modelSelection: S },
+  kindOf: (instanceId: string) => string | null | undefined,
+): { modelSelection: S; effort: Effort } | null {
+  if (kindOf(agent.modelSelection.instanceId) !== "antigravity") return null;
+  if (!ANTIGRAVITY_PRINT_MODE_IDS.has(agent.modelSelection.model)) return null;
+  const split = splitAntigravityModel(agent.modelSelection.model);
+  return split ? { modelSelection: { ...agent.modelSelection, model: split.model }, effort: split.effort } : null;
+}
+
 /** Resolve an Antigravity model id not listed by the current ACP session.
- * Legacy print-mode ids carried effort as a suffix (e.g. `-high`,
- * `-thinking`); strip that suffix when the base model is listed. Truly
+ * A legacy suffixed id runs on its base model when that is listed. Truly
  * retired ids fall back to the session's default model. */
 function resolveAntigravityModel(
   model: string,
   catalog: ModelCatalog,
 ): { model: string; effort?: Effort; swapped?: boolean } {
-  const match = /^(.+)-(low|medium|high|xhigh|thinking)$/i.exec(model);
-  if (match) {
-    const [, base, suffix] = match;
-    if (catalog.options.some((entry) => entry.id === base)) {
-      const lowered = suffix.toLowerCase();
-      return {
-        model: base,
-        effort: lowered === "thinking" ? "high" : (lowered as Effort),
-        swapped: false,
-      };
-    }
-  }
+  const split = splitAntigravityModel(model);
+  if (split && catalog.options.some((entry) => entry.id === split.model)) return { ...split, swapped: false };
   return { model: catalog.default, swapped: true };
 }
 
@@ -663,11 +696,14 @@ function resolveTurnModel(
   return { model, namedEffort, swappedFrom };
 }
 
-/** Input tokens for a turn result, including cache reads when reported separately. */
-function usageInputTokens(usage: any): number {
-  const base = Number(usage?.inputTokens ?? 0);
-  const cached = Number(usage?.cachedReadTokens ?? 0);
-  return (Number.isFinite(base) && base > 0 ? base : 0) + (Number.isFinite(cached) && cached > 0 ? cached : 0);
+/** Input tokens for a turn result, with cache reads added only for an
+ * agent that reports them apart (AcpSpec.addCachedReads). */
+export function usageInputTokens(spec: AcpSpec, usage: any): number {
+  const count = (value: unknown) => {
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  return count(usage?.inputTokens) + (spec.addCachedReads ? count(usage?.cachedReadTokens) : 0);
 }
 
 /** Apply the required permission mode or yolo fallback on an open ACP session. */
@@ -732,7 +768,9 @@ async function applyEffortOption(
   const levels = effortChoices(spec, option);
   const nativeDefault = opts.defaultEfforts.get(configOption(session)?.currentValue)
     ?? (option?.currentValue === spec.effortDefault ? spec.effortDefault : undefined);
-  const explicitEffort = opts.turnEffort ?? opts.namedEffort;
+  // the effort a legacy suffixed id names is the one picked with it, and
+  // wins over an effort left saved on the agent
+  const explicitEffort = opts.namedEffort ?? opts.turnEffort;
   const dropForFixed = Boolean((opts.swappedFrom || opts.namedEffort) && !levels.length);
   const wanted = dropForFixed ? undefined : (explicitEffort ?? (!opts.freshSession ? nativeDefault : undefined));
   if (wanted && !levels.length) throw new Error(`${spec.name} does not report reasoning choices for this model, so the message was not sent. Choose a model that reports them or start a new conversation.`);
@@ -1729,7 +1767,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               emit({
                 ...base(threadId, turnId),
                 type: "thread.token-usage.updated",
-                input: usageInputTokens(usage),
+                input: usageInputTokens(spec, usage),
                 output: usage.outputTokens ?? 0,
               });
             }
@@ -2139,6 +2177,7 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     groupCleanup: true,
     stallWatch: true,
     keepResumedEffort: true,
+    addCachedReads: true,
     reprobeCatalog: true,
     signIn: "run `agy` once to sign in with Google",
     install: installCommand("antigravity") ?? "curl -fsSL https://antigravity.google/cli/install.sh | bash",

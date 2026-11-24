@@ -246,9 +246,12 @@ export function readApproval(card: CardLike, agent: { id: string; name: string }
   let cut = Boolean(json && !json.whole) || (!json && cutShort(summary, tool));
 
   let detail: ApprovalDetail | undefined;
-  const path = str(args.file_path) ?? str(args.notebook_path) ?? str(args.path) ?? str(args.filePath) ?? str(args.target_file);
-  const url = str(args.url) ?? str(args.uri);
-  const command = str(args.command) ?? str(args.cmd);
+  // Antigravity names the same fields in PascalCase; permissionInput
+  // (server/drivers/acp.ts) reads the same names for the rules
+  const path = str(args.file_path) ?? str(args.notebook_path) ?? str(args.path) ?? str(args.filePath) ?? str(args.target_file)
+    ?? str(args.Path) ?? str(args.AbsolutePath) ?? str(args.FilePath) ?? str(args.TargetFile) ?? str(args.DirectoryPath);
+  const url = str(args.url) ?? str(args.uri) ?? str(args.Url) ?? str(args.Uri);
+  const command = str(args.command) ?? str(args.cmd) ?? str(args.CommandLine) ?? str(args.commandLine) ?? str(args.Command);
 
   if (json) {
     if (command) {

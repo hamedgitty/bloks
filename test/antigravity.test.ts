@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import type { RuntimeEvent, SendTurnInput } from "../server/contracts.ts";
-import { ACP_SPECS, acpDriver, permissionInput } from "../server/drivers/acp.ts";
+import { ACP_SPECS, acpDriver, antigravityLegacyMove, permissionInput, usageInputTokens } from "../server/drivers/acp.ts";
 import { SHUTDOWN_GRACE_MS } from "../server/drivers/engine-processes.ts";
 import { OWN_GROUP } from "../server/no-console.ts";
 import { targetOf } from "../server/policy.ts";
@@ -330,6 +330,54 @@ test("legacy suffixed models (-high, -thinking) map to base + thought_level; ret
   await within(personTurn.completed);
   assert.equal(personTurn.events.some((e) => e.type === "runtime.error"), false);
   assert.equal(personTurn.events.find((e) => e.type === "turn.completed")?.ok, true);
+});
+
+test("a legacy suffix names the effort even when an older effort is still saved on the agent", async (t) => {
+  const agy = await createFakeAgy();
+  t.after(() => agy.instance.dispose());
+  await agy.send({ model: "gemini-3.8-flash-high", effort: "low" });
+  await within(agy.completed);
+  const efforts = agy.requests().filter((r) => r.method === "session/set_config_option" && r.params.configId === "thought_level");
+  assert.deepEqual(efforts.map((r) => r.params.value), ["high"]);
+});
+
+test("an agent saved on a legacy suffixed Antigravity id moves onto the base model and the suffix's effort", () => {
+  const kindOf = (id: string) => (id === "agy" ? "antigravity" : "codex");
+  const on = (instanceId: string, model: string) => ({ modelSelection: { instanceId, model }, effort: "low" as const });
+  assert.deepEqual(antigravityLegacyMove(on("agy", "gemini-3.1-pro-high"), kindOf), { modelSelection: { instanceId: "agy", model: "gemini-3.1-pro" }, effort: "high" });
+  assert.deepEqual(antigravityLegacyMove(on("agy", "claude-opus-4-6-thinking"), kindOf), { modelSelection: { instanceId: "agy", model: "claude-opus-4-6" }, effort: "high" });
+  // the moved id is one the picker has a name for
+  const agySpec = ACP_SPECS.find((s) => s.kind === "antigravity")!;
+  assert.equal(agySpec.models.options.find((o) => o.id === "gemini-3.1-pro")?.label, "Gemini 3.1 Pro");
+  assert.equal(antigravityLegacyMove(on("agy", "gemini-3.1-pro"), kindOf), null);
+  assert.equal(antigravityLegacyMove(on("codex", "gpt-5-high"), kindOf), null);
+  // a model of its own whose id only looks suffixed
+  assert.equal(antigravityLegacyMove(on("agy", "gpt-oss-120b-medium"), kindOf), null);
+});
+
+test("gpt-oss-120b-medium, listed by Antigravity, runs as itself", async (t) => {
+  const agy = await createFakeAgy({
+    models: [
+      { value: "gemini-3.1-pro", name: "Gemini 3.1 Pro", efforts: ["low", "high"] },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", efforts: [] },
+    ],
+  });
+  t.after(() => agy.instance.dispose());
+  await agy.send({ model: "gpt-oss-120b-medium" });
+  await within(agy.completed);
+  const configs = agy.requests().filter((r) => r.method === "session/set_config_option");
+  assert.deepEqual(configs.filter((r) => r.params.configId === "model").map((r) => r.params.value), ["gpt-oss-120b-medium"]);
+  assert.equal(configs.some((r) => r.params.configId === "thought_level"), false);
+  assert.equal(agy.events.some((e) => e.type === "runtime.error"), false);
+  assert.equal(agy.events.find((e) => e.type === "turn.completed")?.ok, true);
+});
+
+test("cache reads count as input for Antigravity only", () => {
+  const usage = { inputTokens: 100, cachedReadTokens: 40 };
+  for (const spec of ACP_SPECS) {
+    assert.equal(usageInputTokens(spec, usage), spec.kind === "antigravity" ? 140 : 100, spec.kind);
+  }
+  assert.equal(ACP_SPECS.filter((s) => s.addCachedReads).map((s) => s.kind).join(), "antigravity");
 });
 
 test("stall watchdog allows active progress, already-completed tool_call, and long permission waits with lastSign reset", async (t) => {

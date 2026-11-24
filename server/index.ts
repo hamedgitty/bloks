@@ -144,6 +144,7 @@ import type { ModelSelection, PlanUsage, ProviderAdapter, ProviderInstance, Prov
 import { planNotices, sortNotices } from "./plan-usage.ts";
 import { newId } from "./contracts.ts";
 
+import { antigravityLegacyMove } from "./drivers/acp.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { isMissingSession } from "./drivers/claude.ts";
 import { forgetNative, slimNativeLogs, tidyNativeLogs } from "./drivers/native.ts";
@@ -3388,6 +3389,15 @@ store.seedIfEmpty();
     for (const { bot, move } of moves) store.appendMessage(bot.threadId, { role: "bot", kind: "notice", text: move.notice });
     console.log(`[bloks] moved ${moves.length} agent(s) off Claude Code on Bloks AI onto the Bloks engine`);
   }
+  // Antigravity's print mode saved the effort inside the model id
+  // ("gemini-3.1-pro-high"); over ACP the model and its effort are two
+  // choices, so such an agent is moved onto that pair once
+  // (antigravityLegacyMove).
+  const legacy = store.bots.flatMap((bot) => {
+    const patch = antigravityLegacyMove(bot, kindOf);
+    return patch ? [{ id: bot.id, patch }] : [];
+  });
+  if (legacy.length) store.patchBots(legacy);
 }
 
 /** An agent record as clients are allowed to see it. The resume cursors
@@ -6649,7 +6659,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       }
       // An engine that fails a turn normally says why with a runtime.error.
       // Some only put the reason on the turn's end (a Codex turn the
-      // provider refused, Antigravity's status), and a turn that ends in
+      // provider refused), and a turn that ends in
       // silence reads as the agent not answering, so recoverTurn says it.
       if (event.stopReason === "tool_stalled") {
         const said = turnErrors.get(event.threadId)?.at(-1);
