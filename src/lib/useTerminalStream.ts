@@ -9,6 +9,7 @@
 // frames for a screen nobody has registered wait here until one does.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/state/store";
+import { followStream } from "./followStream";
 
 /** What the server says about one shell (server/terminal.ts). */
 export interface TerminalInfo {
@@ -98,45 +99,46 @@ export function useTerminalStream(botId: string) {
       held.current.set(id, waiting);
     };
 
-    const source = new EventSource(`/api/bots/${botId}/terminals/stream`);
-    source.onopen = () => {
-      thisConnection = new Set();
-      if (live) setLost(false);
-    };
-    source.onmessage = (event) => {
-      if (!live) return;
-      let frame: Frame;
-      try {
-        frame = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (frame.list) {
-        setList(frame.list);
-        return;
-      }
-      if (!frame.id) return;
-      const info = frame.hello ?? frame.bye;
-      if (info) setList((now) => now?.map((t) => (t.id === info.id ? info : t)) ?? now);
-      if (frame.hello) {
-        if (greeted.has(frame.id) && !thisConnection.has(frame.id)) deliver({ id: frame.id, reset: true });
-        greeted.add(frame.id);
-        thisConnection.add(frame.id);
-        return;
-      }
-      if (frame.closed) {
-        held.current.delete(frame.id);
-        greeted.delete(frame.id);
-        return;
-      }
-      deliver(frame);
-    };
-    source.onerror = () => {
-      if (live) setLost(true);
-    };
+    const stop = followStream(`/api/bots/${botId}/terminals/stream`, {
+      opened: () => {
+        thisConnection = new Set();
+        if (live) setLost(false);
+      },
+      lost: () => {
+        if (live) setLost(true);
+      },
+      message: (data) => {
+        if (!live) return;
+        let frame: Frame;
+        try {
+          frame = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (frame.list) {
+          setList(frame.list);
+          return;
+        }
+        if (!frame.id) return;
+        const info = frame.hello ?? frame.bye;
+        if (info) setList((now) => now?.map((t) => (t.id === info.id ? info : t)) ?? now);
+        if (frame.hello) {
+          if (greeted.has(frame.id) && !thisConnection.has(frame.id)) deliver({ id: frame.id, reset: true });
+          greeted.add(frame.id);
+          thisConnection.add(frame.id);
+          return;
+        }
+        if (frame.closed) {
+          held.current.delete(frame.id);
+          greeted.delete(frame.id);
+          return;
+        }
+        deliver(frame);
+      },
+    });
     return () => {
       live = false;
-      source.close();
+      stop();
     };
   }, [botId]);
 
