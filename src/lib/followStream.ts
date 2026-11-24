@@ -39,10 +39,23 @@ export function followStream(
   let current: StreamLike | null = null;
   let cancel: (() => void) | null = null;
   let wait = RETRY_FIRST_MS;
+  const retry = () => {
+    cancel?.();
+    cancel = later(connect, wait);
+    wait = Math.min(wait * 2, RETRY_MAX_MS);
+  };
   const connect = () => {
     cancel = null;
     if (stopped) return;
-    const stream = open(url);
+    let stream: StreamLike;
+    try {
+      stream = open(url);
+    } catch {
+      // a stream that cannot even be made is a failure like any other
+      on.lost();
+      retry();
+      return;
+    }
     current = stream;
     stream.onopen = () => {
       if (stopped || current !== stream) return;
@@ -57,9 +70,7 @@ export function followStream(
       on.lost();
       stream.close();
       current = null;
-      cancel?.();
-      cancel = later(connect, wait);
-      wait = Math.min(wait * 2, RETRY_MAX_MS);
+      retry();
     };
   };
   connect();

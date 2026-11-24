@@ -101,3 +101,28 @@ test("a stream given up is not heard from, and a stopped follower opens nothing 
   live.streams[0]!.fail();
   assert.equal(live.timers.length, 0, "an error after stopping schedules nothing");
 });
+
+test("a stream that cannot even be made is tried again, not given up on", () => {
+  const timers: Array<() => void> = [];
+  const events: string[] = [];
+  let attempts = 0;
+  followStream(
+    "/api/bots/b1/terminals/stream",
+    { opened: () => events.push("opened"), lost: () => events.push("lost"), message: () => {} },
+    () => {
+      attempts++;
+      if (attempts === 1) throw new Error("no stream right now");
+      const s = new FakeStream();
+      queueMicrotask(() => s.open());
+      return s;
+    },
+    (run) => {
+      timers.push(run);
+      return () => {};
+    },
+  );
+  assert.deepEqual(events, ["lost"]);
+  assert.equal(timers.length, 1, "a retry is scheduled after the throw");
+  timers.shift()!();
+  assert.equal(attempts, 2);
+});
