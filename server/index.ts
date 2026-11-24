@@ -3392,12 +3392,15 @@ store.seedIfEmpty();
   // Antigravity's print mode saved the effort inside the model id
   // ("gemini-3.1-pro-high"); over ACP the model and its effort are two
   // choices, so such an agent is moved onto that pair once
-  // (antigravityLegacyMove).
+  // (antigravityLegacyMove), and so is the engine new agents start on.
   const legacy = store.bots.flatMap((bot) => {
     const patch = antigravityLegacyMove(bot, kindOf);
     return patch ? [{ id: bot.id, patch }] : [];
   });
   if (legacy.length) store.patchBots(legacy);
+  const defaults = cfg.agentDefaults;
+  const newAgents = defaults?.modelSelection && antigravityLegacyMove({ modelSelection: defaults.modelSelection }, kindOf);
+  if (newAgents) Object.assign(cfg, saveConfig({ agentDefaults: { ...defaults, ...newAgents } }));
 }
 
 /** An agent record as clients are allowed to see it. The resume cursors

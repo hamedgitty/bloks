@@ -146,6 +146,21 @@ function readJson(text: string): { fields: Record<string, unknown>; whole: boole
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
 
+// Antigravity names the same fields in PascalCase; permissionInput
+// (server/drivers/acp.ts) reads the same names for the rules
+const PATH_KEYS = ["file_path", "notebook_path", "path", "filePath", "target_file", "Path", "AbsolutePath", "FilePath", "TargetFile", "DirectoryPath"];
+const URL_KEYS = ["url", "uri", "Url", "Uri"];
+const COMMAND_KEYS = ["command", "cmd", "CommandLine", "commandLine", "Command"];
+
+/** The first of these keys whose value is a non-blank string. */
+function firstStr(args: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = str(args[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
 /** The code in an ACP title such as "Run `pnpm test`", or null. */
 function backticked(text: string): string | null {
   const m = text.match(/`([^`]+)`/);
@@ -246,12 +261,9 @@ export function readApproval(card: CardLike, agent: { id: string; name: string }
   let cut = Boolean(json && !json.whole) || (!json && cutShort(summary, tool));
 
   let detail: ApprovalDetail | undefined;
-  // Antigravity names the same fields in PascalCase; permissionInput
-  // (server/drivers/acp.ts) reads the same names for the rules
-  const path = str(args.file_path) ?? str(args.notebook_path) ?? str(args.path) ?? str(args.filePath) ?? str(args.target_file)
-    ?? str(args.Path) ?? str(args.AbsolutePath) ?? str(args.FilePath) ?? str(args.TargetFile) ?? str(args.DirectoryPath);
-  const url = str(args.url) ?? str(args.uri) ?? str(args.Url) ?? str(args.Uri);
-  const command = str(args.command) ?? str(args.cmd) ?? str(args.CommandLine) ?? str(args.commandLine) ?? str(args.Command);
+  const path = firstStr(args, PATH_KEYS);
+  const url = firstStr(args, URL_KEYS);
+  const command = firstStr(args, COMMAND_KEYS);
 
   if (json) {
     if (command) {

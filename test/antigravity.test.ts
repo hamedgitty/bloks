@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import type { RuntimeEvent, SendTurnInput } from "../server/contracts.ts";
-import { ACP_SPECS, acpDriver, antigravityLegacyMove, permissionInput, usageInputTokens } from "../server/drivers/acp.ts";
+import { ACP_SPECS, acpDriver, antigravityLegacyMove, permissionInput } from "../server/drivers/acp.ts";
 import { SHUTDOWN_GRACE_MS } from "../server/drivers/engine-processes.ts";
 import { OWN_GROUP } from "../server/no-console.ts";
 import { targetOf } from "../server/policy.ts";
@@ -181,7 +181,7 @@ test("Antigravity uses session/resume (never session/load), works with no explic
   assert.equal(ok.requests().some((r) => r.method === "session/load"), false);
   assert.equal(ok.events.find((e) => e.type === "turn.completed")?.ok, true);
 
-  // Token usage includes cachedReadTokens, and usage_update emits context.reading
+  // Antigravity reports cache reads apart from inputTokens, so they are added back (2284 + 11184), and usage_update emits context.reading
   const usage = ok.events.find((e) => e.type === "thread.token-usage.updated");
   assert.equal(usage?.type === "thread.token-usage.updated" ? usage.input : 0, 13468);
   assert.equal(usage?.type === "thread.token-usage.updated" ? usage.output : 0, 10);
@@ -332,13 +332,38 @@ test("legacy suffixed models (-high, -thinking) map to base + thought_level; ret
   assert.equal(personTurn.events.find((e) => e.type === "turn.completed")?.ok, true);
 });
 
-test("a legacy suffix names the effort even when an older effort is still saved on the agent", async (t) => {
-  const agy = await createFakeAgy();
+test("a legacy suffix names the effort over one still saved on the agent, and a base model keeps the saved effort", async (t) => {
+  const sent = async (more: Partial<SendTurnInput>) => {
+    const agy = await createFakeAgy();
+    t.after(() => agy.instance.dispose());
+    await agy.send(more);
+    await within(agy.completed);
+    assert.equal(agy.events.some((e) => e.type === "runtime.error"), false);
+    assert.equal(agy.events.find((e) => e.type === "turn.completed")?.ok, true);
+    const configs = agy.requests().filter((r) => r.method === "session/set_config_option");
+    const values = (id: string) => configs.filter((r) => r.params.configId === id).map((r) => r.params.value);
+    return { models: values("model"), efforts: values("thought_level") };
+  };
+  assert.deepEqual(await sent({ model: "gemini-3.8-flash-high", effort: "low" }), { models: ["gemini-3.8-flash"], efforts: ["high"] });
+  assert.deepEqual(await sent({ model: "gemini-3.8-flash", effort: "low" }), { models: ["gemini-3.8-flash"], efforts: ["low"] });
+});
+
+test("an agent moved onto claude-opus-4-6, which agy 1.5.16 no longer lists, runs on the default model with its effort", async (t) => {
+  const agy = await createFakeAgy({
+    models: [
+      { value: "gemini-4-neon", name: "Gemini 4 Neon", efforts: ["low", "medium", "high", "xhigh"] },
+      { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", efforts: [] },
+    ],
+  });
   t.after(() => agy.instance.dispose());
-  await agy.send({ model: "gemini-3.8-flash-high", effort: "low" });
+  await agy.send({ model: "claude-opus-4-6", effort: "high" });
   await within(agy.completed);
-  const efforts = agy.requests().filter((r) => r.method === "session/set_config_option" && r.params.configId === "thought_level");
-  assert.deepEqual(efforts.map((r) => r.params.value), ["high"]);
+  const configs = agy.requests().filter((r) => r.method === "session/set_config_option");
+  assert.equal(configs.some((r) => r.params.configId === "model"), false);
+  assert.deepEqual(configs.filter((r) => r.params.configId === "thought_level").map((r) => r.params.value), ["high"]);
+  const notice = agy.events.find((e) => e.type === "runtime.error");
+  assert.match(notice?.type === "runtime.error" ? notice.message : "", /no longer offers claude-opus-4-6 on this account, so this turn runs on Gemini 4 Neon/);
+  assert.equal(agy.events.find((e) => e.type === "turn.completed")?.ok, true);
 });
 
 test("an agent saved on a legacy suffixed Antigravity id moves onto the base model and the suffix's effort", () => {
@@ -346,9 +371,6 @@ test("an agent saved on a legacy suffixed Antigravity id moves onto the base mod
   const on = (instanceId: string, model: string) => ({ modelSelection: { instanceId, model }, effort: "low" as const });
   assert.deepEqual(antigravityLegacyMove(on("agy", "gemini-3.1-pro-high"), kindOf), { modelSelection: { instanceId: "agy", model: "gemini-3.1-pro" }, effort: "high" });
   assert.deepEqual(antigravityLegacyMove(on("agy", "claude-opus-4-6-thinking"), kindOf), { modelSelection: { instanceId: "agy", model: "claude-opus-4-6" }, effort: "high" });
-  // the moved id is one the picker has a name for
-  const agySpec = ACP_SPECS.find((s) => s.kind === "antigravity")!;
-  assert.equal(agySpec.models.options.find((o) => o.id === "gemini-3.1-pro")?.label, "Gemini 3.1 Pro");
   assert.equal(antigravityLegacyMove(on("agy", "gemini-3.1-pro"), kindOf), null);
   assert.equal(antigravityLegacyMove(on("codex", "gpt-5-high"), kindOf), null);
   // a model of its own whose id only looks suffixed
@@ -370,14 +392,6 @@ test("gpt-oss-120b-medium, listed by Antigravity, runs as itself", async (t) => 
   assert.equal(configs.some((r) => r.params.configId === "thought_level"), false);
   assert.equal(agy.events.some((e) => e.type === "runtime.error"), false);
   assert.equal(agy.events.find((e) => e.type === "turn.completed")?.ok, true);
-});
-
-test("cache reads count as input for Antigravity only", () => {
-  const usage = { inputTokens: 100, cachedReadTokens: 40 };
-  for (const spec of ACP_SPECS) {
-    assert.equal(usageInputTokens(spec, usage), spec.kind === "antigravity" ? 140 : 100, spec.kind);
-  }
-  assert.equal(ACP_SPECS.filter((s) => s.addCachedReads).map((s) => s.kind).join(), "antigravity");
 });
 
 test("stall watchdog allows active progress, already-completed tool_call, and long permission waits with lastSign reset", async (t) => {

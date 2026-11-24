@@ -625,7 +625,7 @@ const CATALOG_RETRY_MS = 60_000;
 /** A legacy print-mode Antigravity id, which carried the effort as a
  * suffix (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`), as its base
  * model and that effort. Null for an id without such a suffix. */
-export function splitAntigravityModel(model: string): { model: string; effort: Effort } | null {
+function splitAntigravityModel(model: string): { model: string; effort: Effort } | null {
   const match = /^(.+)-(low|medium|high|xhigh|thinking)$/i.exec(model);
   if (!match) return null;
   const suffix = match[2].toLowerCase();
@@ -698,7 +698,7 @@ function resolveTurnModel(
 
 /** Input tokens for a turn result, with cache reads added only for an
  * agent that reports them apart (AcpSpec.addCachedReads). */
-export function usageInputTokens(spec: AcpSpec, usage: any): number {
+function usageInputTokens(spec: AcpSpec, usage: any): number {
   const count = (value: unknown) => {
     const n = Number(value ?? 0);
     return Number.isFinite(n) && n > 0 ? n : 0;

@@ -81,6 +81,12 @@ test("Antigravity's CommandLine and Path read as a command and a file, with the 
   assert.equal(read.short, "a.ts");
   assert.deepEqual(readApproval(card("read", '{"AbsolutePath":"/tmp/b.ts"}'), ada).detail, { kind: "path", path: "/tmp/b.ts" });
   assert.deepEqual(readApproval(card("execute", '{"Command":"ls"}'), ada).detail, { kind: "command", text: "ls" });
+  for (const key of ["FilePath", "TargetFile", "DirectoryPath"]) {
+    assert.deepEqual(readApproval(card("read", JSON.stringify({ [key]: "/tmp/c" })), ada).detail, { kind: "path", path: "/tmp/c" }, key);
+  }
+  for (const key of ["Url", "Uri"]) {
+    assert.deepEqual(readApproval(card("fetch", JSON.stringify({ [key]: "https://example.com/x" })), ada).detail, { kind: "url", url: "https://example.com/x" }, key);
+  }
 });
 
 test("a reason is shown as a sentence, and a summary that is only the tool's name as nothing", () => {
