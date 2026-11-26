@@ -6772,7 +6772,7 @@ async function onRuntimeEvent(event: RuntimeEvent) {
       // the failure in its own words, for a routine's or a workflow's
       // incident, where the run itself keeps only the stop reason
       if (!handedOver && event.ok === false) failedWords.set(event.threadId, lastWords(endedErrors, event.stopReason ?? null));
-      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.preInputRefusal ? { unsent: true } : {}), ...(quietWord !== undefined ? { said: quietWord } : quietAction ? { said: "QUIET" } : {}) });
+      if (!handedOver) settleOwners(bot, event.threadId, { ok: event.ok !== false, why: event.preInputRefusal?.reason ?? event.stopReason ?? null, quiet: quietRun, ...(event.stopReason === "interrupted" ? { stopped: true } : {}), ...(event.preInputRefusal ? { unsent: true } : {}), ...(quietWord !== undefined ? { said: quietWord } : quietAction ? { said: "QUIET" } : {}) });
       failedWords.delete(event.threadId);
       if (mailQueue.length) setTimeout(() => void drainMail(), 0);
       // whatever the agent was given to act with is spent
@@ -10341,8 +10341,8 @@ function unsendable(botId: string): string | null {
  * or `unsent` from a start that failed before reaching its engine, which
  * otherwise left each of them waiting on an end that never came.
  */
-function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean; quiet?: boolean; said?: string }) {
-  const { ok, why, unsent, quiet } = outcome;
+function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; why: string | null; unsent?: boolean; quiet?: boolean; said?: string; stopped?: boolean }) {
+  const { ok, why, unsent, quiet, stopped } = outcome;
   // a run from a script reads how its conversation's turn really ended
   runs.ended(laneId, { ok, why });
   // what the agent actually said; a turn that never ran said nothing,
@@ -10366,6 +10366,7 @@ function settleOwners(bot: BotRecord, laneId: string, outcome: { ok: boolean; wh
       summary: said || undefined,
       error: ok ? undefined : (why ?? "The turn did not finish."),
       ...(quiet ? { quiet: true } : {}),
+      ...(!ok && stopped ? { stopped: true } : {}),
     });
   }
   // A workflow's ask step ends where its turn does, and what the
@@ -16064,7 +16065,7 @@ async function reviewForSkill(
   return true;
 }
 
-function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string; quiet?: boolean; refused?: boolean }) {
+function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; error?: string; quiet?: boolean; refused?: boolean; stopped?: boolean }) {
   const open = openRuns.get(threadId);
   if (!open) return;
   openRuns.delete(threadId);
@@ -16074,6 +16075,7 @@ function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; er
     error: outcome.error,
     ...(outcome.quiet ? { quiet: true } : {}),
     ...(outcome.refused ? { refused: true } : {}),
+    ...(outcome.stopped ? { stopped: true } : {}),
   });
   // Work that happened without anyone asking for it, which is exactly the
   // kind a person wants an account of afterwards.
@@ -16094,9 +16096,11 @@ function closeRun(threadId: string, outcome: { ok: boolean; summary?: string; er
     actor: routine?.name || "a routine",
     summary: outcome.ok
       ? `Ran ${routine?.name || "a routine"}`
-      : `${routine?.name || "A routine"} failed`,
+      : outcome.stopped
+        ? `${routine?.name || "A routine"} was stopped`
+        : `${routine?.name || "A routine"} failed`,
     detail: {
-      outcome: outcome.ok ? "ok" : "failed",
+      outcome: outcome.ok ? "ok" : outcome.stopped ? "stopped" : "failed",
       ...(routine?.time ? { at: routine.time } : {}),
       ...(outcome.error ? { error: outcome.error } : {}),
     },
@@ -16539,9 +16543,11 @@ function routineLabel(routine: Routine): string {
 
 /** A routine's run ended: its incident, and the one notice when this
  * failure is the one that stopped its automatic runs. */
-function routineEnded(routine: Routine, threadId: string, outcome: { ok: boolean; error?: string; refused?: boolean }, stopped: boolean) {
-  // refused as the person pressed Run, and told so there and then
-  if (outcome.refused) return;
+function routineEnded(routine: Routine, threadId: string, outcome: { ok: boolean; error?: string; refused?: boolean; stopped?: boolean }, stopped: boolean) {
+  // refused as the person pressed Run, and told so there and then; or
+  // stopped by the person, who knows, the way noteTurnEnd leaves any
+  // turn they stopped (#553)
+  if (outcome.refused || outcome.stopped) return;
   const subject = `routine:${routine.id}`;
   const why = failedWords.get(threadId) ?? outcome.error ?? "the run did not finish";
   if (outcome.ok) thingWorked(subject, "It ran fine on its next run.");

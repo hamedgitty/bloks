@@ -36,6 +36,8 @@ export interface RoutineRun {
   threadId?: string;
   /** It ran, and the agent answered QUIET: nothing needed the person. */
   quiet?: boolean;
+  /** The person stopped its turn before it finished: not a failure. */
+  stopped?: boolean;
 }
 
 export interface Routine {

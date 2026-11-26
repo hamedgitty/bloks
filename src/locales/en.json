@@ -697,6 +697,7 @@
   "automationsPanel.routine": "Routine",
   "automationsPanel.routineDetails": "Routine details",
   "automationsPanel.savedErrorExcerpt": "Saved error excerpt",
+  "automationsPanel.runStopped": "Stopped before it finished",
   "automationsPanel.savedResultExcerpt": "Saved result excerpt",
   "automationsPanel.showDetails": "Show details",
   "automationsPanel.showTheList": "Show the list",

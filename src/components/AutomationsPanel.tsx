@@ -1008,7 +1008,8 @@ function RunHistory({ routine }: { routine: Routine }) {
           }
           const { run } = row;
           const showing = open === run.id;
-          const detail = run.error ?? run.summary ?? "";
+          // a run the person stopped is said as that, not as a failure
+          const detail = run.stopped ? t("automationsPanel.runStopped") : (run.error ?? run.summary ?? "");
           const source = runSource(routine, run, state.bots, state.bloks);
           return (
             <div key={run.id}>
@@ -1023,9 +1024,11 @@ function RunHistory({ routine }: { routine: Routine }) {
                     "mt-[5px] size-1.5 shrink-0 rounded-full",
                     run.state === "ok"
                       ? "bg-success"
-                      : run.state === "failed"
-                        ? "bg-destructive"
-                        : "animate-pulse bg-brand",
+                      : run.stopped
+                        ? "bg-muted-foreground/50"
+                        : run.state === "failed"
+                          ? "bg-destructive"
+                          : "animate-pulse bg-brand",
                   )}
                 />
                 <span className="min-w-0 flex-1">

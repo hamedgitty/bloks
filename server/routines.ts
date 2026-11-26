@@ -147,6 +147,12 @@ export interface RoutineRun {
    * the person. A flag on an "ok" run rather than a state of its own, so
    * a client that does not know it still reads a run that went fine. */
   quiet?: boolean;
+  /** The person stopped its turn before it finished (Stop, Send now, or
+   * words that stop the turn). A flag on a "failed" run, so a client that
+   * does not know it still reads a run that did not finish, but it is no
+   * failure of the routine's: it is not counted toward stopping it, and
+   * no incident is raised for it. */
+  stopped?: boolean;
   error?: string;
   /** A blocked scheduled slot, not an engine run or a consumed occurrence. */
   heldSlot?: number;
@@ -698,7 +704,7 @@ export class RoutineStore {
   endRun(
     routineId: string,
     runId: string,
-    outcome: { state: "ok" | "failed"; summary?: string; error?: string; quiet?: boolean; refused?: boolean },
+    outcome: { state: "ok" | "failed"; summary?: string; error?: string; quiet?: boolean; refused?: boolean; stopped?: boolean },
   ): boolean {
     const routine = this.get(routineId);
     const run = routine?.runs?.find((r) => r.id === runId);
@@ -708,7 +714,8 @@ export class RoutineStore {
     // a quiet run said one word, which is not a summary of anything
     if (outcome.quiet && outcome.state === "ok") run.quiet = true;
     else if (outcome.summary) run.summary = outcome.summary.slice(0, 300);
-    if (outcome.error) run.error = outcome.error.slice(0, 300);
+    if (outcome.stopped && outcome.state === "failed") run.stopped = true;
+    else if (outcome.error) run.error = outcome.error.slice(0, 300);
     // kept a little longer than the note tells, so the note knows where
     // it cut and says so
     if (outcome.state === "ok" && !outcome.quiet && outcome.summary?.trim()) {
@@ -716,8 +723,9 @@ export class RoutineStore {
     }
     // A run by hand that was refused before it started (its agent held,
     // its engine gone) was said to the person who pressed Run, and is not
-    // the routine failing on its own.
-    const paused = outcome.refused ? false : countRun(routine, outcome.state === "ok", run.error ?? "the run did not finish", run.endedAt);
+    // the routine failing on its own, and neither is a run the person
+    // stopped themselves.
+    const paused = outcome.refused || run.stopped ? false : countRun(routine, outcome.state === "ok", run.error ?? "the run did not finish", run.endedAt);
     this.save();
     return paused;
   }

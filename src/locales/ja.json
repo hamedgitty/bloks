@@ -680,6 +680,7 @@
   "automationsPanel.routine": "ルーティン",
   "automationsPanel.routineDetails": "ルーティンの詳細",
   "automationsPanel.savedErrorExcerpt": "保存されたエラーの抜粋",
+  "automationsPanel.runStopped": "終了前に停止しました",
   "automationsPanel.savedResultExcerpt": "保存された結果の抜粋",
   "automationsPanel.showDetails": "詳細を表示",
   "automationsPanel.showTheList": "一覧を表示",
