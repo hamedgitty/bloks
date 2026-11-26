@@ -14,13 +14,16 @@
 //                            The spec says the agent then replays the whole
 //                            conversation as session/update; Bloks already
 //                            has that transcript, so those frames are dropped.
+//   session/resume        -> the same without the replay, for an agent that
+//                            names it (AcpSpec.resumeMethod).
 //   session/prompt        -> blocks for the turn, returns { stopReason, usage }
 //   session/update        <- streaming notifications (text, tools, thoughts)
 //   session/request_permission <- a real request we must answer
 //
 // A turn spawns a process and kills it on settle, the same as the codex
-// driver. Continuity comes from session/load with the stored id.
-import { spawn, execFile } from "node:child_process";
+// driver. Continuity comes from session/load (or the agent's
+// session/resume) with the stored id.
+import { type ChildProcess, spawn, execFile } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -48,7 +51,9 @@ import { installCommand } from "../engine-commands.ts";
 import { describeEarlyExit, describeSpawnError } from "./spawn-error.ts";
 import { within } from "./deadline.ts";
 import { OWN_GROUP } from "../no-console.ts";
-import { EngineProcesses } from "./engine-processes.ts";
+import { EngineProcesses, signalGroup } from "./engine-processes.ts";
+import { DEFAULT_STALL_MINUTES, STOP_GRACE_MS, describeStall, isStalled, type OpenCall } from "./stall.ts";
+import { TurnProcess } from "./turn-process.ts";
 import { screenServers } from "./screen-servers.ts";
 import { ALL_SCREENS, NO_SCREENS } from "../screens.ts";
 import { isolatedOpencodeEnv, isolatedOpencodePaths, seedOpencodeSignIns } from "../opencode-setup.ts";
@@ -103,8 +108,29 @@ export interface AcpSpec {
    * `cursor_login`). Called only when initialize lists it. */
   authMethod?: string;
   /** Permission modes selected after every new or resumed session, so a
-   * saved full-auto mode cannot carry into an ordinary turn. */
-  permissionModes?: { default: string; fullAuto: string };
+   * saved full-auto mode cannot carry into an ordinary turn. Omit fullAuto
+   * when full-auto is passed via turnArgs instead of a session mode. */
+  permissionModes?: { default: string; fullAuto?: string };
+  /** RPC method used to reopen a prior session. Defaults to `session/load`. */
+  resumeMethod?: "session/load" | "session/resume";
+  /** Hold turn completion and thread ownership until the process group is
+   * confirmed dead (TurnProcess). */
+  groupCleanup?: boolean;
+  /** Watch open tool calls against turn.stallMs while no permission card
+   * is waiting for the user. */
+  stallWatch?: boolean;
+  /** Resolve a saved model id not listed by the current session (legacy
+   * suffixed ids or retired models). */
+  unlistedModel?: (model: string, catalog: ModelCatalog) => { model: string; effort?: Effort; swapped?: boolean };
+  /** Keep the resumed session's current effort when no explicit effort was
+   * requested and the default effort for the model has not been learned yet. */
+  keepResumedEffort?: boolean;
+  /** The turn result's inputTokens leaves out cache reads, which come
+   * apart as cachedReadTokens, so they are added back (Antigravity). Off
+   * for the others, whose inputTokens may already count them. */
+  addCachedReads?: boolean;
+  /** Re-probe the model catalog from snapshot() when stale or previously failed. */
+  reprobeCatalog?: boolean;
   /** The oldest release that speaks ACP the way this driver does. An
    * older one is reported as unavailable with the reason, not left to
    * fail its first message in some stranger way. */
@@ -236,6 +262,21 @@ function writesOf(update: any): string[] {
 
 const RULE_FIELDS = ["command", "cmd", "script", "file_path", "path", "filePath", "notebook_path", "target_file", "url", "uri"];
 
+/** PascalCase / camelCase aliases some ACP agents (e.g. Antigravity) send in
+ * rawInput, mapped to the canonical fields `policy.ts` (`targetOf`) reads. */
+const RULE_FIELD_ALIASES: ReadonlyArray<readonly [alias: string, canonical: string]> = [
+  ["CommandLine", "command"],
+  ["commandLine", "command"],
+  ["Command", "command"],
+  ["Path", "path"],
+  ["FilePath", "filePath"],
+  ["TargetFile", "target_file"],
+  ["AbsolutePath", "path"],
+  ["DirectoryPath", "path"],
+  ["Url", "url"],
+  ["Uri", "uri"],
+];
+
 /**
  * What a permission request is about, in the fields the rules read: the
  * call's own input (where a command usually is), and every file it names
@@ -249,11 +290,20 @@ export function permissionInput(call: any): Record<string, unknown> {
   // command could be walked past by padding the front of it.
   const raw: Record<string, unknown> = {};
   const given = call?.rawInput && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) ? call.rawInput : {};
-  for (const key of RULE_FIELDS) {
-    const value = given[key];
-    if (typeof value === "string") raw[key] = value;
+  const readValue = (value: unknown): string | undefined => {
+    if (typeof value === "string") return value;
     // a command can come as its argv, the way Codex's legacy one does
-    else if (Array.isArray(value) && value.every((part) => typeof part === "string")) raw[key] = value.join(" ");
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) return value.join(" ");
+    return undefined;
+  };
+  for (const key of RULE_FIELDS) {
+    const value = readValue(given[key]);
+    if (value !== undefined) raw[key] = value;
+  }
+  for (const [alias, canonical] of RULE_FIELD_ALIASES) {
+    if (typeof raw[canonical] === "string" && raw[canonical].trim()) continue;
+    const value = readValue(given[alias]);
+    if (value !== undefined) raw[canonical] = value;
   }
   const paths = [
     ...(Array.isArray(call?.locations) ? call.locations.map((l: any) => l?.path) : []),
@@ -544,6 +594,201 @@ async function probeCatalog(spec: AcpSpec, cli: string, env: Record<string, stri
   }
 }
 
+/** Once an agent has given its result it exits by itself. It gets until
+ * then, or the stop grace, before anything is signalled, so no signal cuts
+ * short what it does on its way out. */
+function exitOrGrace(child: ChildProcess): Promise<void> {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, STOP_GRACE_MS);
+    timer.unref?.();
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+const ANTIGRAVITY_FALLBACK_MODELS: ModelCatalog = {
+  default: "gemini-3.1-pro",
+  options: [
+    { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+    { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  ],
+};
+
+const CATALOG_FRESH_MS = 10 * 60_000;
+const CATALOG_RETRY_MS = 60_000;
+
+/** A legacy print-mode Antigravity id, which carried the effort as a
+ * suffix (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`), as its base
+ * model and that effort. Null for an id without such a suffix. */
+function splitAntigravityModel(model: string): { model: string; effort: Effort } | null {
+  const match = /^(.+)-(low|medium|high|xhigh|thinking)$/i.exec(model);
+  if (!match) return null;
+  const suffix = match[2].toLowerCase();
+  return { model: match[1], effort: suffix === "thinking" ? "high" : (suffix as Effort) };
+}
+
+/** The suffixed ids print mode offered whose effort is now a separate
+ * choice. Not every suffixed id was one: ACP still serves
+ * `gpt-oss-120b-medium` as a model of its own, so it is not listed. */
+const ANTIGRAVITY_PRINT_MODE_IDS = new Set([
+  "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+  "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "claude-opus-4-6-thinking",
+]);
+
+/** An agent saved on a legacy print-mode Antigravity id, moved onto the
+ * base model and the effort the suffix named, so the picker shows the
+ * model by its name and no older saved effort competes with the suffix.
+ * Null when the agent is not on Antigravity or its id is not one of
+ * those. Any other suffixed id is left alone: it may be a model in its
+ * own right, and one that is not still runs on its base (resolveAntigravityModel). */
+export function antigravityLegacyMove<S extends { instanceId: string; model: string }>(
+  agent: { modelSelection: S },
+  kindOf: (instanceId: string) => string | null | undefined,
+): { modelSelection: S; effort: Effort } | null {
+  if (kindOf(agent.modelSelection.instanceId) !== "antigravity") return null;
+  if (!ANTIGRAVITY_PRINT_MODE_IDS.has(agent.modelSelection.model)) return null;
+  const split = splitAntigravityModel(agent.modelSelection.model);
+  return split ? { modelSelection: { ...agent.modelSelection, model: split.model }, effort: split.effort } : null;
+}
+
+/** Resolve an Antigravity model id not listed by the current ACP session.
+ * A legacy suffixed id runs on its base model when that is listed. Truly
+ * retired ids fall back to the session's default model. */
+function resolveAntigravityModel(
+  model: string,
+  catalog: ModelCatalog,
+): { model: string; effort?: Effort; swapped?: boolean } {
+  const split = splitAntigravityModel(model);
+  if (split && catalog.options.some((entry) => entry.id === split.model)) return { ...split, swapped: false };
+  return { model: catalog.default, swapped: true };
+}
+
+/** Normalize a turn's requested model against the session's catalog. */
+function resolveTurnModel(
+  requested: string | undefined,
+  catalog: ModelCatalog | null,
+  spec: AcpSpec,
+  defaultModel: string,
+): { model: string | undefined; namedEffort?: Effort; swappedFrom: string | null } {
+  let model = requested;
+  let namedEffort: Effort | undefined;
+  let swappedFrom: string | null = null;
+  if (spec.effortOption && model === "auto" && !catalog?.options.some((entry) => entry.id === "auto")) {
+    model = defaultModel;
+  }
+  if (model && catalog && !catalog.options.some((entry) => entry.id === model) && spec.unlistedModel) {
+    const resolved = spec.unlistedModel(model, catalog);
+    if (resolved.swapped) swappedFrom = model;
+    model = resolved.model;
+    namedEffort = resolved.effort;
+  }
+  if (spec.effortOption && model && !catalog?.options.some((entry) => entry.id === model)) {
+    throw new Error(`${spec.name} does not offer ${model} in this session, so the message was not sent. Pick a listed model or start a new conversation.`);
+  }
+  return { model, namedEffort, swappedFrom };
+}
+
+/** Input tokens for a turn result, with cache reads added only for an
+ * agent that reports them apart (AcpSpec.addCachedReads). */
+function usageInputTokens(spec: AcpSpec, usage: any): number {
+  const count = (value: unknown) => {
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  return count(usage?.inputTokens) + (spec.addCachedReads ? count(usage?.cachedReadTokens) : 0);
+}
+
+/** Apply the required permission mode or yolo fallback on an open ACP session. */
+async function applyPermissionMode(
+  spec: AcpSpec,
+  rpc: RpcLink,
+  getSession: () => any,
+  mergeSession: (changed: any) => any,
+  sessionId: string,
+  fullAuto: boolean,
+  onYoloError: (err: unknown) => void,
+): Promise<void> {
+  const session = getSession();
+  const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
+  if (spec.permissionModes) {
+    const modeId = fullAuto ? spec.permissionModes.fullAuto : spec.permissionModes.default;
+    if (!modeId) return;
+    const option = configOption(session, "mode");
+    const offered = option ? selectValues(option).map((entry) => entry.value) : modes.map((mode) => mode?.id);
+    if (!offered.includes(modeId)) {
+      throw new Error(`${spec.name} does not offer the required permission mode (${modeId}), so the message was not sent. Update the engine and try again.`);
+    }
+    try {
+      if (option) {
+        const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value: modeId }), "selecting the approval mode", spec.name);
+        const next = mergeSession(changed);
+        if (configOption(next, "mode")?.currentValue !== modeId) throw new Error("the agent did not confirm the selected mode");
+        return;
+      }
+      await within(rpc.request("session/set_mode", { sessionId, modeId }), "selecting the approval mode", spec.name);
+      return;
+    } catch (e) {
+      throw new Error(`${spec.name} could not select the required permission mode (${modeId}): ${(e as Error).message}. The message was not sent.`);
+    }
+  }
+  if (fullAuto && modes.some((m) => m?.id === "yolo")) {
+    try {
+      await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
+    } catch (e) {
+      onYoloError(e);
+    }
+  }
+}
+
+/** Apply the reasoning effort option on an open ACP session. */
+async function applyEffortOption(
+  spec: AcpSpec,
+  rpc: RpcLink,
+  getSession: () => any,
+  mergeSession: (changed: any) => any,
+  sessionId: string,
+  opts: {
+    freshSession: boolean;
+    turnEffort: Effort | undefined;
+    namedEffort: Effort | undefined;
+    swappedFrom: string | null;
+    defaultEfforts: Map<string, string>;
+  },
+): Promise<void> {
+  const session = getSession();
+  const option = configOption(session, spec.effortOption!);
+  const levels = effortChoices(spec, option);
+  const nativeDefault = opts.defaultEfforts.get(configOption(session)?.currentValue)
+    ?? (option?.currentValue === spec.effortDefault ? spec.effortDefault : undefined);
+  // the effort a legacy suffixed id names is the one picked with it, and
+  // wins over an effort left saved on the agent
+  const explicitEffort = opts.namedEffort ?? opts.turnEffort;
+  const dropForFixed = Boolean((opts.swappedFrom || opts.namedEffort) && !levels.length);
+  const wanted = dropForFixed ? undefined : (explicitEffort ?? (!opts.freshSession ? nativeDefault : undefined));
+  if (wanted && !levels.length) throw new Error(`${spec.name} does not report reasoning choices for this model, so the message was not sent. Choose a model that reports them or start a new conversation.`);
+  if (!opts.freshSession && !wanted && levels.length && !spec.keepResumedEffort) {
+    throw new Error(`${spec.name}'s default reasoning effort is not known for this model, so the message was not sent. Choose a reasoning level or start a new conversation.`);
+  }
+  const effort = wanted === spec.effortDefault ? wanted : clampEffort(wanted, levels);
+  const value = effort && nativeEffort(spec, effort);
+  if (!value || (!explicitEffort && option.currentValue === value)) return;
+  try {
+    const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value }), "selecting the reasoning effort", spec.name);
+    const next = mergeSession(changed);
+    if (configOption(next, spec.effortOption!)?.currentValue !== value) throw new Error("the agent did not confirm the selected reasoning effort");
+  } catch (error) {
+    throw new Error(`${spec.name} could not select reasoning effort ${effort} (${(error as Error).message}), so the message was not sent.`);
+  }
+}
+
 export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
   const decodeConfig = (raw: unknown): AcpConfig => {
     const o = (raw ?? {}) as Record<string, unknown>;
@@ -569,6 +814,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
          * once its process is gone, or a little after the kill. */
         interrupt: () => Promise<void>;
         stop: () => void;
+        cleanup?: () => Promise<boolean>;
         turnId: string;
         asks: Map<string, (behavior: string, message?: string, source?: string) => void>;
       }
@@ -578,6 +824,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
       // replaced the first time an agent tells us what it serves
       const models: ModelCatalog = { default: spec.models.default, options: [...spec.models.options] };
+      const catalogListeners = new Set<() => void>();
+      const notifyCatalogChange = (before: string) => {
+        if (!spec.reprobeCatalog) return;
+        if (JSON.stringify([models.default, models.options, models.note]) !== before) {
+          for (const listener of [...catalogListeners]) listener();
+        }
+      };
       const defaultEfforts = new Map<string, string>();
       const rememberDefaultEffort = (session: any) => {
         if (!spec.effortOption) return;
@@ -588,9 +841,15 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       const updateCatalog = (session: any) => {
         const catalog = catalogFromSession(session, spec, models);
         if (catalog) {
+          const before = JSON.stringify([models.default, models.options, models.note]);
           const defaultModel = spec.effortOption && catalog.options.some((entry) => entry.id === models.default) ? models.default : catalog.default;
           models.options = catalog.options;
           models.default = defaultModel;
+          if (spec.reprobeCatalog) {
+            models.checkedAt = Date.now();
+            delete models.note;
+          }
+          notifyCatalogChange(before);
         }
         return catalog;
       };
@@ -636,24 +895,35 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       // are probed once with a throwaway session, so the picker starts
       // with real models. A failed probe leaves the placeholder; the
       // first turn replaces it with what the agent serves.
-      let finishCatalog = () => {};
-      const catalogReady = spec.probeModels
-        ? new Promise<void>((resolve) => {
-            finishCatalog = resolve;
-          })
-        : undefined;
-      if (spec.probeModels) {
-        widenPath();
-        void seeded()
-          .then(() => probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined))
-          .then((catalog) => {
-            if (catalog) {
-              models.options = catalog.options;
-              models.default = catalog.default;
+      let catalogAsked = 0;
+      let probing: Promise<void> | null = null;
+      const runCatalogProbe = (notify: boolean): Promise<void> =>
+        (probing ??= (async () => {
+          catalogAsked = Date.now();
+          widenPath();
+          await seeded();
+          const catalog = await probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined);
+          const before = JSON.stringify([models.default, models.options, models.note]);
+          if (catalog) {
+            models.options = catalog.options;
+            models.default = catalog.default;
+            if (spec.reprobeCatalog) {
+              models.checkedAt = Date.now();
+              delete models.note;
             }
-            finishCatalog();
-          });
-      }
+          } else if (spec.reprobeCatalog && !models.checkedAt) {
+            models.note = `${spec.name} did not list this account's models, so these are the ones built into Bloks.${spec.signIn ? ` ${spec.signIn[0].toUpperCase()}${spec.signIn.slice(1)}, and Bloks asks it again.` : ""}`;
+          }
+          if (notify) notifyCatalogChange(before);
+          probing = null;
+        })());
+      const freshenCatalog = () => {
+        if (!spec.reprobeCatalog) return;
+        if (Date.now() - catalogAsked >= (models.checkedAt ? CATALOG_FRESH_MS : CATALOG_RETRY_MS)) {
+          void runCatalogProbe(true);
+        }
+      };
+      const catalogReady = spec.probeModels ? runCatalogProbe(false) : undefined;
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
@@ -661,13 +931,14 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const turnId = newId();
         if (!turn.place) await seeded();
 
+        const fullAccess = Boolean(turn.fullAccess && !turn.shared && !turn.untrusted);
         const argv = [
           ...spec.args,
           ...(spec.turnArgs?.({
             // a turn the owner did not vouch for asks, however the engine is set
             fullAuto: config.fullAuto && !turn.untrusted,
             // the agent's own full access, which never reaches a shared turn
-            fullAccess: Boolean(turn.fullAccess && !turn.shared && !turn.untrusted),
+            fullAccess,
             model: turn.model,
             effort: turn.effort,
           }) ?? []),
@@ -700,6 +971,16 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               windowsVerbatimArguments: launch.windowsVerbatimArguments,
             });
         engines.add(child);
+        let completed = false;
+        let owner: TurnProcess | null = null;
+        const release = () => {
+          if (completed && owner?.confirmed && active.get(threadId)?.turnId === turnId) active.delete(threadId);
+        };
+        if (spec.groupCleanup) owner = new TurnProcess(child, { onConfirmed: release });
+        const openCalls = new Map<string, OpenCall>();
+        let lastSign = Date.now();
+        let watch: ReturnType<typeof setInterval> | null = null;
+        let settleDone: Promise<void> = Promise.resolve();
 
         // `banner` is pi-acp's startup listing, which it also sends as an
         // ordinary agent message (see handleUpdate).
@@ -750,12 +1031,17 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const rpc = attachRpc({
           stdin: child.stdin,
           stdout: child.stdout,
-          onFrame: (msg, dir) => appendNative(threadId, { dir, source: `${spec.kind}.acp`, msg: dir === "out" ? withoutPictures(msg) : msg }, undefined, hiddenTokens),
+          onFrame: (msg, dir) => {
+            if (dir === "in" && !state.settled) lastSign = Date.now();
+            appendNative(threadId, { dir, source: `${spec.kind}.acp`, msg: dir === "out" ? withoutPictures(msg) : msg }, undefined, hiddenTokens);
+          },
           onRequest: (msg) => {
+            if (state.settled) return;
             if (msg.method === "session/request_permission") handlePermission(msg);
             else rpc.replyError(msg.id, -32601, "not supported by this client");
           },
           onNotify: (msg) => {
+            if (state.settled) return;
             if (msg.method === "session/update") handleUpdate(msg.params);
           },
         });
@@ -779,12 +1065,41 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         // has been told nothing and has nothing to put down, so the turn
         // ends there and then. A compaction is a prompt of its own, and is
         // cancelled like one.
+        const cancellingSession = () => sessionId ?? (state.compacting && session?.sessionId ? String(session.sessionId) : null);
+        let settleStarted: (() => void) | null = null;
+        const settledSignal = new Promise<void>((resolve) => {
+          settleStarted = resolve;
+        });
+        let interruptDone: Promise<void> | null = null;
         const interrupt = async () => {
+          if (state.settled) return settleDone;
+          if (interruptDone) return interruptDone;
           state.stopping = true;
           for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn was stopped", "turn-ended");
+          const cancelling = cancellingSession();
+          if (cancelling && !exited) rpc.notify("session/cancel", { sessionId: cancelling });
+          if (owner) {
+            interruptDone = (async () => {
+              // Give the agent a brief window to handle session/cancel (for
+              // instance to terminate PTY-detached tool subprocesses outside
+              // its own process group) before escalating to group cleanup.
+              if (cancelling && !exited && (state.live || state.compacting)) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                  settledSignal,
+                  gone,
+                  new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, 2_000);
+                    timer.unref?.();
+                  }),
+                ]);
+                clearTimeout(timer);
+              }
+              return settle(false, "interrupted");
+            })();
+            return interruptDone;
+          }
           if (exited) return;
-          const cancelling = sessionId ?? (state.compacting && session?.sessionId ? String(session.sessionId) : null);
-          if (cancelling) rpc.notify("session/cancel", { sessionId: cancelling });
           if (!state.live && !state.compacting) {
             settle(false, "interrupted");
             return;
@@ -796,14 +1111,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           if (!state.settled) settle(false, "interrupted");
         };
 
-        // A turn somebody stopped ends as stopped, whatever the agent made
-        // of the cancel: ACP answers one with stopReason "cancelled", which
-        // read as the turn failing ("The turn did not finish").
-        const settle = (ok: boolean, stopReason: string | null) => {
-          if (state.settled) return;
-          state.settled = true;
-          for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn ended", "turn-ended");
-          rpc.failPending(new Error("turn settled"));
+        const settleImmediate = (ok: boolean, stopReason: string | null) => {
           active.delete(threadId);
           if (state.text.trim()) {
             emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: state.text });
@@ -816,6 +1124,60 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             cost: null,
           });
           stop();
+        };
+
+        const settleWithGroupCleanup = async (
+          group: TurnProcess,
+          finalOk: boolean,
+          finalReason: string | null,
+          finalText: string,
+          graceful: boolean,
+        ) => {
+          if (graceful) {
+            try { child.stdin.end(); } catch { /* already closed */ }
+            await exitOrGrace(child);
+          }
+          if (process.platform === "win32") killTree(child.pid, () => child.kill("SIGTERM"));
+          const confirmed = await group.end(STOP_GRACE_MS);
+          if (!confirmed) {
+            emit({
+              ...base(threadId, turnId),
+              type: "runtime.error",
+              message: `${spec.name} did not finish stopping its process and the commands it started. This conversation cannot start another turn until they have ended.`,
+            });
+          }
+          completed = true;
+          release();
+          if (finalText.trim()) {
+            emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: finalText });
+          }
+          emit({
+            ...base(threadId, turnId),
+            type: "turn.completed",
+            ok: confirmed && finalOk,
+            stopReason: confirmed ? finalReason : "interrupted",
+            cost: null,
+          });
+        };
+
+        // A turn somebody stopped ends as stopped, whatever the agent made
+        // of the cancel: ACP answers one with stopReason "cancelled", which
+        // read as the turn failing ("The turn did not finish").
+        const settle = (ok: boolean, stopReason: string | null, graceful = false): Promise<void> => {
+          if (state.settled) return settleDone;
+          state.settled = true;
+          settleStarted?.();
+          if (watch) clearInterval(watch);
+          for (const finish of [...asks.values()]) finish("deny", "Bloks: the turn ended", "turn-ended");
+          rpc.failPending(new Error("turn settled"));
+          if (!owner) {
+            settleImmediate(ok, stopReason);
+            return settleDone;
+          }
+          const finalOk = state.stopping ? false : ok;
+          const finalReason = state.stopping ? "interrupted" : stopReason;
+          settleDone = settleWithGroupCleanup(owner, finalOk, finalReason, state.text, graceful);
+          return settleDone;
         };
 
         // ── agent asks the user for permission ──
@@ -846,6 +1208,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           const finish = (behavior: string, message?: string, source = "user") => {
             if (!asks.delete(requestId)) return;
             clearTimeout(timer);
+            lastSign = Date.now();
             // The card shows the agent's own labels ("Allow once", "Always
             // allow"), so the answer comes back as that text rather than a
             // bare allow/deny. Match it before falling back, or picking
@@ -888,6 +1251,43 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             choices: options.map((o) => String(o?.name ?? "")).filter(Boolean).slice(0, 5),
           });
         }
+
+        const handleToolCall = (update: any) => {
+          state.tools++;
+          const hasId = update.toolCallId !== undefined && update.toolCallId !== null && String(update.toolCallId).length > 0;
+          const itemId = hasId ? String(update.toolCallId) : newId();
+          const alreadyDone = update.status === "completed" || update.status === "failed";
+          if (spec.stallWatch && hasId && !alreadyDone && !openCalls.has(itemId)) {
+            openCalls.set(itemId, { name: toolTitle(update), input: permissionInput(update), since: Date.now() });
+          }
+          const paths = writesOf(update);
+          const signature = acpSignature(update);
+          emit({
+            ...base(threadId, turnId),
+            type: "item.started",
+            itemType: "tool",
+            itemId,
+            title: toolTitle(update),
+            ...(paths.length ? { paths } : {}),
+            // a command writes what it writes, and says nothing of it
+            ...(update.kind === "execute" ? { mayWrite: true } : {}),
+            ...(signature ? { signature } : {}),
+          });
+        };
+
+        const handleToolUpdate = (update: any) => {
+          const status = update.status;
+          if (status !== "completed" && status !== "failed") return;
+          const itemId = String(update.toolCallId ?? "");
+          openCalls.delete(itemId);
+          emit({
+            ...base(threadId, turnId),
+            type: "item.completed",
+            itemType: "tool",
+            itemId,
+            ok: status === "completed",
+          });
+        };
 
         // ── streaming updates ──
         function handleUpdate(params: any) {
@@ -943,8 +1343,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           }
           // session/load replays history as the same notifications a live
           // turn uses. Until we have sent session/prompt, none of it is
-          // this turn's output.
-          if (!state.live) return;
+          // this turn's output. Once stopping, drop late stream chunks too.
+          if (!state.live || state.stopping) return;
           switch (update.sessionUpdate) {
             case "agent_message_chunk": {
               const text = update.content?.type === "text" ? String(update.content.text ?? "") : "";
@@ -957,35 +1357,12 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             case "agent_thought_chunk":
               emit({ ...base(threadId, turnId), type: "item.updated", itemType: "reasoning", tokens: null });
               break;
-            case "tool_call": {
-              state.tools++;
-              const paths = writesOf(update);
-              const signature = acpSignature(update);
-              emit({
-                ...base(threadId, turnId),
-                type: "item.started",
-                itemType: "tool",
-                itemId: String(update.toolCallId ?? newId()),
-                title: toolTitle(update),
-                ...(paths.length ? { paths } : {}),
-                // a command writes what it writes, and says nothing of it
-                ...(update.kind === "execute" ? { mayWrite: true } : {}),
-                ...(signature ? { signature } : {}),
-              });
+            case "tool_call":
+              handleToolCall(update);
               break;
-            }
-            case "tool_call_update": {
-              const status = update.status;
-              if (status !== "completed" && status !== "failed") break;
-              emit({
-                ...base(threadId, turnId),
-                type: "item.completed",
-                itemType: "tool",
-                itemId: String(update.toolCallId ?? ""),
-                ok: status === "completed",
-              });
+            case "tool_call_update":
+              handleToolUpdate(update);
               break;
-            }
           }
         }
 
@@ -1028,6 +1405,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           await new Promise<void>((resolve) => setImmediate(resolve));
         };
         child.on("error", (e) => {
+          if (state.settled) return;
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
@@ -1098,7 +1476,31 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           return true;
         }
 
-        active.set(threadId, { interrupt, stop, turnId, asks });
+        const startStallWatch = () => {
+          const limitMs = typeof turn.stallMs === "number" ? turn.stallMs : DEFAULT_STALL_MINUTES * 60_000;
+          if (!spec.stallWatch || limitMs <= 0) return null;
+          const timer = setInterval(() => {
+            const now = Date.now();
+            if (state.settled || state.stopping || !isStalled({ open: openCalls.size, asking: asks.size, lastSign, now, limitMs })) return;
+            const oldest = [...openCalls.values()].sort((a, b) => a.since - b.since)[0];
+            emit({ ...base(threadId, turnId), type: "runtime.error", message: describeStall(oldest, now - lastSign) });
+            void settle(false, "tool_stalled");
+          }, Math.max(250, Math.min(15_000, limitMs / 4)));
+          timer.unref?.();
+          return timer;
+        };
+        watch = startStallWatch();
+
+        const cleanup = owner
+          ? () => {
+              if (!owner.confirmed) {
+                if (process.platform === "win32") killTree(child.pid, () => child.kill("SIGTERM"));
+                else signalGroup(child, "SIGKILL");
+              }
+              return owner.end(STOP_GRACE_MS);
+            }
+          : undefined;
+        active.set(threadId, { interrupt, stop, cleanup, turnId, asks });
         emit({ ...base(threadId, turnId), type: "turn.started" });
 
         (async () => {
@@ -1199,12 +1601,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               screenNote = `\n\nA correction to the above: ${spec.name}, working on ${turn.place!.label}, cannot reach ${what} from there this turn (it takes MCP servers there only over HTTP, and does not say it can), so you have no ${unreached.join(" or ")} tools. Your commands and files are not affected. If a task needs ${unreached.length > 1 ? "them" : "it"}, say so plainly.`;
             }
             const mcpServers = [...connectors, ...attached, ...screens];
+            const resumeRpc = spec.resumeMethod ?? "session/load";
             session = null;
             if (cursor) {
               try {
                 session =
                   (await within(
-                    rpc.request("session/load", { cwd, mcpServers, sessionId: cursor }),
+                    rpc.request(resumeRpc, { cwd, mcpServers, sessionId: cursor }),
                     "reopening the conversation",
                     spec.name,
                   )) ?? {};
@@ -1242,15 +1645,17 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
 
             // the agent knows its own model list better than we do
             let model = turn.model;
+            let namedEffort: Effort | undefined;
+            let swappedFrom: string | null = null;
             // A model the agent will not switch to must not quietly become
             // a turn on whatever model it already had: say so and stop
             // before anything is sent or spent.
             const selectModel = async () => {
               const catalog = updateCatalog(session);
-              if (spec.effortOption && model === "auto" && !catalog?.options.some((entry) => entry.id === "auto")) model = models.default;
-              if (spec.effortOption && model && !catalog?.options.some((entry) => entry.id === model)) {
-                throw new Error(`${spec.name} does not offer ${model} in this session, so the message was not sent. Pick a listed model or start a new conversation.`);
-              }
+              const resolved = resolveTurnModel(model, catalog, spec, models.default);
+              model = resolved.model;
+              namedEffort = resolved.namedEffort;
+              if (resolved.swappedFrom) swappedFrom = resolved.swappedFrom;
               if (model && model !== catalog?.default && catalog?.options.some((entry) => entry.id === model)) {
                 const option = configOption(session);
                 try {
@@ -1267,7 +1672,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               }
             };
             await selectModel();
-            if (spec.effortOption && !freshSession && !turn.effort) {
+            if (spec.effortOption && !freshSession && !turn.effort && !namedEffort) {
               const option = configOption(session, spec.effortOption);
               const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue);
               // Command Code cannot reset an explicit effort to provider
@@ -1283,76 +1688,50 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 await selectModel();
               }
             }
-            // "yolo" is gemini-cli's mode for acting without asking. Other
-            // agents use modes for something else entirely (pi-acp's are
-            // thinking levels), so only ask for it where it exists.
-            const modes: any[] = Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : [];
-            const fullAuto = (config.fullAuto && !turn.untrusted) || (turn.fullAccess && !turn.shared);
-            if (spec.permissionModes) {
-              // An agent that also lists its modes as a config option (Devin)
-              // is set and confirmed there; one with only session modes is
-              // set with set_mode. Either way the session's own list is the
-              // proof the mode exists: Devin's set_mode says yes to any id.
-              const modeId = fullAuto ? spec.permissionModes.fullAuto : spec.permissionModes.default;
-              const option = configOption(session, "mode");
-              const offered = option ? selectValues(option).map((entry) => entry.value) : modes.map((mode) => mode?.id);
-              if (!offered.includes(modeId)) {
-                throw new Error(`${spec.name} does not offer the required permission mode (${modeId}), so the message was not sent. Update the engine and try again.`);
-              }
-              try {
-                if (option) {
-                  const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value: modeId }), "selecting the approval mode", spec.name);
-                  session = { ...session, ...changed };
-                  if (configOption(session, "mode")?.currentValue !== modeId) throw new Error("the agent did not confirm the selected mode");
-                } else {
-                  await within(rpc.request("session/set_mode", { sessionId, modeId }), "selecting the approval mode", spec.name);
-                }
-              } catch (e) {
-                throw new Error(`${spec.name} could not select the required permission mode (${modeId}): ${(e as Error).message}. The message was not sent.`);
-              }
-            } else if (fullAuto && modes.some((m) => m?.id === "yolo")) {
-              try {
-                await rpc.request("session/set_mode", { sessionId, modeId: "yolo" });
-              } catch (e) {
-                // failing safe: the turn still runs, with approvals as they
-                // were. A stop that cut the request short is not a refusal.
-                if (state.stopping) return settle(false, "interrupted");
-                emit({
-                  ...base(threadId, turnId),
-                  type: "runtime.error",
-                  message: `${spec.name} did not accept full access (${(e as Error).message}), so it may ask before acting.`,
-                });
-              }
-            }
+            const getSession = () => session;
+            const mergeSession = (changed: any) => (session = { ...session, ...changed });
+            const fullAuto = (config.fullAuto && !turn.untrusted) || fullAccess;
+            await applyPermissionMode(spec, rpc, getSession, mergeSession, sessionId, fullAuto, (e) => {
+              if (state.stopping) return;
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: `${spec.name} did not accept full access (${(e as Error).message}), so it may ask before acting.`,
+              });
+            });
+            if (state.stopping) return settle(false, "interrupted");
 
             if (spec.effortOption) {
               if (freshSession) rememberDefaultEffort(session);
-              const option = configOption(session, spec.effortOption);
-              const levels = effortChoices(spec, option);
-              const nativeDefault = defaultEfforts.get(configOption(session)?.currentValue)
-                ?? (option?.currentValue === spec.effortDefault ? spec.effortDefault : undefined);
-              const wanted = turn.effort ?? (!freshSession ? nativeDefault : undefined);
-              if (wanted && !levels.length) throw new Error(`${spec.name} does not report reasoning choices for this model, so the message was not sent. Choose a model that reports them or start a new conversation.`);
-              if (!freshSession && !wanted && levels.length) throw new Error(`${spec.name}'s default reasoning effort is not known for this model, so the message was not sent. Choose a reasoning level or start a new conversation.`);
-              const effort = wanted === spec.effortDefault ? wanted : clampEffort(wanted, levels);
-              const value = effort && nativeEffort(spec, effort);
-              if (value && (turn.effort || option.currentValue !== value)) {
-                try {
-                  const changed = await within(rpc.request("session/set_config_option", { sessionId, configId: String(option.id), value }), "selecting the reasoning effort", spec.name);
-                  session = { ...session, ...changed };
-                  if (configOption(session, spec.effortOption)?.currentValue !== value) throw new Error("the agent did not confirm the selected reasoning effort");
-                } catch (error) {
-                  throw new Error(`${spec.name} could not select reasoning effort ${effort} (${(error as Error).message}), so the message was not sent.`);
-                }
+              const currentModelId = configOption(session)?.currentValue;
+              if (!freshSession && !turn.effort && !namedEffort && !turn.place && catalogReady && !defaultEfforts.has(currentModelId)) {
+                await catalogReady;
               }
+              await applyEffortOption(spec, rpc, getSession, mergeSession, sessionId, {
+                freshSession,
+                turnEffort: turn.effort,
+                namedEffort,
+                swappedFrom,
+                defaultEfforts,
+              });
               updateCatalog(session);
+            }
+
+            const activeModel = model ?? configOption(session)?.currentValue ?? models.default;
+            if (swappedFrom && !turn.person) {
+              const activeLabel = models.options.find((o) => o.id === activeModel)?.label ?? activeModel;
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: `${spec.name} no longer offers ${swappedFrom} on this account, so this turn runs on ${activeLabel}. Pick one of the models it offers now in this agent's settings.`,
+              });
             }
 
             emit({
               ...base(threadId, turnId),
               type: "session.started",
               sessionId,
-              model: model ?? configOption(session)?.currentValue ?? models.default,
+              model: activeModel,
             });
 
             // Stopped while the session was opening, before the agent had
@@ -1388,7 +1767,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               emit({
                 ...base(threadId, turnId),
                 type: "thread.token-usage.updated",
-                input: usage.inputTokens ?? 0,
+                input: usageInputTokens(spec, usage),
                 output: usage.outputTokens ?? 0,
               });
             }
@@ -1434,7 +1813,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               settle(false, why ? why.slice(0, 400) : "empty_turn");
               return;
             }
-            settle(ended, reason === "end_turn" ? null : reason);
+            settle(ended, reason === "end_turn" ? null : reason, true);
           } catch (e) {
             if (state.settled) return;
             // whatever a request to a process being stopped came back with,
@@ -1477,11 +1856,13 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         const signedIn = ownSetup
           ? existsSync(join(isolatedOpencodePaths().opencodeDataDir, "auth.json"))
           : (spec.authFiles ?? []).some((f) => existsSync(join(homedir(), f)));
-        // An agent that answers without a sign-in is not "signed out" for
-        // want of one: saying so put up a warning nobody could clear while
-        // the agent was answering fine on a free model.
+        const canCheckAuth = Boolean(spec.keyEnv?.length || spec.authFiles?.length || spec.signInCheck || ownSetup);
+        // An agent that answers without a sign-in (or keeps its login in the
+        // system keyring with no checkable file) is not "signed out" for want
+        // of one.
         const authenticated =
-          hasKey || signedIn ? true : spec.signInCheck ? await askSignedIn() : spec.signInOptional ? undefined : false;
+          hasKey || signedIn ? true : spec.signInCheck ? await askSignedIn() : (spec.signInOptional || !canCheckAuth) ? undefined : false;
+        freshenCatalog();
         return { state: "available", version: `${spec.name} ${version}`, authenticated };
       };
 
@@ -1513,6 +1894,15 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
         models,
         snapshot,
         catalogReady,
+        ...(spec.reprobeCatalog
+          ? {
+              refreshCatalog: () => runCatalogProbe(true),
+              onCatalogChange: (listener: () => void) => {
+                catalogListeners.add(listener);
+                return () => catalogListeners.delete(listener);
+              },
+            }
+          : {}),
         adapter: {
           provider: spec.kind,
           // images: handed the turn's pictures, which go on only to an
@@ -1527,7 +1917,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           },
           hasSession: (threadId) => active.has(threadId),
           stopAll: async () => {
-            for (const { stop } of active.values()) stop();
+            await Promise.all([...active.values()].map((turn) => (spec.groupCleanup ? turn.interrupt() : Promise.resolve(turn.stop()))));
           },
           onEvent: (listener) => {
             listeners.add(listener);
@@ -1535,9 +1925,15 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           },
         },
         dispose: async () => {
-          for (const { stop } of active.values()) stop();
+          const turns = [...active.values()];
+          for (const turn of turns) {
+            if (spec.groupCleanup) void turn.interrupt();
+            else turn.stop();
+          }
           listeners.clear();
+          catalogListeners.clear();
           await engines.end();
+          await Promise.all(turns.map((turn) => turn.cleanup?.()));
         },
       };
     },
@@ -1765,5 +2161,27 @@ export const ACP_SPECS: readonly AcpSpec[] = [
       default: "auto",
       options: [{ id: "auto", label: "Auto" }],
     },
+  },
+  {
+    kind: "antigravity",
+    name: "Antigravity",
+    command: "agy",
+    args: ["acp"],
+    turnArgs: ({ fullAuto, fullAccess }) => (fullAuto || fullAccess ? ["--dangerously-skip-permissions"] : []),
+    efforts: ["low", "medium", "high", "xhigh"],
+    effortOption: "thought_level",
+    permissionModes: { default: "default" },
+    resumeMethod: "session/resume",
+    minVersion: "1.5.13",
+    probeModels: true,
+    groupCleanup: true,
+    stallWatch: true,
+    keepResumedEffort: true,
+    addCachedReads: true,
+    reprobeCatalog: true,
+    signIn: "run `agy` once to sign in with Google",
+    install: installCommand("antigravity") ?? "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    unlistedModel: resolveAntigravityModel,
+    models: ANTIGRAVITY_FALLBACK_MODELS,
   },
 ];

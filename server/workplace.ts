@@ -285,7 +285,6 @@ export function containerNameFor(agentName: string, taken: Iterable<string> = []
 export function programName(driverKind: string, fallback: string): string {
   if (driverKind === "claudeAgent") return "Claude Code";
   if (driverKind === "codex") return "Codex";
-  if (driverKind === "antigravity") return "Antigravity";
   return ACP_SPECS.find((s) => s.kind === driverKind)?.name ?? fallback;
 }
 
@@ -294,7 +293,6 @@ export function programName(driverKind: string, fallback: string): string {
 export function defaultCli(driverKind: string): string {
   if (driverKind === "claudeAgent") return "claude";
   if (driverKind === "codex") return "codex";
-  if (driverKind === "antigravity") return "agy";
   return ACP_SPECS.find((s) => s.kind === driverKind)?.command ?? driverKind;
 }
 

@@ -110,7 +110,7 @@ function fakeScript(home: string, fake: Fake): string {
     "  else if (msg.method === 'session/prompt') {",
     "    say({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1',",
     "      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' } } } });",
-    "    reply({ stopReason: 'end_turn', usage: { inputTokens: 12, outputTokens: 3 } });",
+    "    reply({ stopReason: 'end_turn', usage: { inputTokens: 12, cachedReadTokens: 40, outputTokens: 3 } });",
     "  } else reply({});",
     "});",
   ].join("\n");
@@ -233,7 +233,7 @@ test("a Cursor turn authenticates with cursor_login before its session, and list
       assert.deepEqual(inst.models.options.map((m) => m.id), ["model-a", "model-b"]);
       const events = await turn(inst);
       assert.ok(events.some((e) => e.type === "turn.completed" && e.ok === true), JSON.stringify(events));
-      assert.ok(events.some((e) => e.type === "thread.token-usage.updated" && e.input === 12 && e.output === 3), "usage is counted like any ACP engine");
+      assert.ok(events.some((e) => e.type === "thread.token-usage.updated" && e.input === 12 && e.output === 3), "usage is counted like any ACP engine, cache reads not added again");
       const turnCalls = calls().filter((c) => c.method);
       const methods = turnCalls.map((c) => c.method);
       const auth = methods.lastIndexOf("authenticate");

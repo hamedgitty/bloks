@@ -709,7 +709,7 @@ for an update. To do it by hand on a Mac or Linux:
 | Grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash`, then `grok login` | yes |
 | Cursor | `curl https://cursor.com/install -fsS \| bash`, then `cursor-agent login` (the Cursor CLI, not the editor) | yes |
 | Cline | `npm i -g --prefix ~/.local cline` (3.0.68 or newer), then `cline auth` | yes |
-| Antigravity | `curl -fsSL https://antigravity.google/cli/install.sh \| bash`, then `agy` | yes |
+| Antigravity | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` (1.5.13 or newer), then `agy` | yes |
 | OpenRouter | Sign in from Settings, in your browser | no |
 | Gemini, Grok, Kimi, Llama, DeepSeek, Mistral, Groq | Paste a key in Settings | no |
 | Custom (OpenAI-compatible) | Paste a base URL and one or more keys | no |
@@ -742,24 +742,23 @@ each turn. If the host refuses it, the turn stops and says so.
 An agent's own browser and its computer (Cloud box, Local VM, or this
 Mac's screen) reach it as tools on Claude Code, on Codex, and on the ACP
 agents that take tool servers: Devin, OpenCode, Gemini CLI, Cursor, Grok
-CLI and Command Code. An agent working in a container or over SSH still
+CLI, Command Code and Antigravity. An agent working in a container or over SSH still
 has both: they run on this computer and it reaches them through Bloks.
-The API models reach a cloud box through Bloks, and nothing else. Pi,
-Cline and Antigravity get neither yet. On those, the agent's settings
+The API models reach a cloud box through Bloks, and nothing else. Pi and
+Cline get neither yet. On those, the agent's settings
 say so beside **Its own browser** and **Computer**, the agent is told it
 has no browser or screen rather than promised one, and its turns never
 hold the Local VM from agents that could use it. On a Linux server with
 no display, the agent's browser runs headless.
 
 Connected apps and the MCP servers you attach to an agent reach it on
-Antigravity too. Antigravity's headless mode cannot take an agent's own servers, so a turn that has
-any runs through `agy acp` instead, which can: the agent gets exactly
-the apps and servers its settings grant, their keys and headers never
-on a command line, and anything agy would ask about comes to you as an
-approval card, answered by the agent's approval mode like any other. A
-server agy cannot reach stops the turn and says why; agy 1.5.14 takes
-stdio servers there but not HTTP ones, so an attached HTTP server is
-one of those. Turns without apps or servers run as before.
+Antigravity too. Antigravity runs through `agy acp`, so the agent gets
+exactly the apps and servers its settings grant, their keys and headers
+never on a command line, and anything agy would ask about comes to you
+as an approval card, answered by the agent's approval mode like any
+other. A server agy cannot reach stops the turn and says why; agy 1.5.14
+takes stdio servers but not HTTP ones, so an attached HTTP server is
+one of those.
 
 An MCP server you add as a command is looked for on this computer, never
 run to check it. If the program is not there, Settings, Plugins says
