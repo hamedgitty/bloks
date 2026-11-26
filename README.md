@@ -17,6 +17,7 @@
   <a href="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/hamedgitty/bloks/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS, Windows and Linux" src="https://img.shields.io/badge/desktop-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-6b7280">
   <a href="https://apps.apple.com/app/bloks-ai-agents/id6804453451"><img alt="iPhone app on the App Store" src="https://img.shields.io/badge/iPhone-App_Store-6b7280"></a>
+  <a href="https://play.google.com/store/apps/details?id=dev.bloks.app"><img alt="Android app on Google Play" src="https://img.shields.io/badge/Android-Google_Play-6b7280"></a>
   <img alt="Node 22+" src="https://img.shields.io/badge/node-22%2B-6b7280">
   <a href="https://discord.gg/FhV3SuGYfS"><img alt="Discord: Bloks community" src="https://img.shields.io/badge/discord-Bloks_community-5865f2"></a>
 </p>
@@ -44,9 +45,9 @@ Agents stream their replies, show you what they are running, and keep
 what they learn in plain files you can read and edit.
 
 The [iPhone app](https://apps.apple.com/app/bloks-ai-agents/id6804453451)
-pairs with the desktop app. Nothing runs on the phone: it is a window onto
-the agents on your computer, with approvals you answer from the Lock
-Screen or your wrist.
+and the [Android app](https://play.google.com/store/apps/details?id=dev.bloks.app) pair with the desktop app. Nothing runs on
+the phone: it is a window onto the agents on your computer, with
+approvals you answer from the Lock Screen or your wrist.
 
 Using Bloks, or thinking of sending a fix? Come and say hello in the
 [Bloks Discord](https://discord.gg/FhV3SuGYfS): it is where people help
@@ -54,8 +55,8 @@ each other, talk ideas through, and agree on a change before writing it.
 
 ## 📣 Bloks 3 is out
 
-**Bloks 3 is out for Mac, Windows and Linux, and on the App Store for
-iPhone and Apple Watch.** An Android app is coming soon.
+**Bloks 3 is out for Mac, Windows and Linux, on the App Store for iPhone
+and Apple Watch, and [on Google Play](https://play.google.com/store/apps/details?id=dev.bloks.app) for Android.**
 
 Thank you to everyone who reported a bug, tested a build or sent code for
 this release. A lot of what is in it started as one of your issues, and
@@ -643,7 +644,8 @@ Download it from [bloks.dev](https://bloks.dev) or the
 build is universal (Apple silicon and Intel), signed and notarized, so it
 opens without a Gatekeeper warning. Windows and Linux builds are
 unsigned, which on Windows means SmartScreen warns on first run. The
-iPhone app is [on the App Store](https://apps.apple.com/app/bloks-ai-agents/id6804453451).
+iPhone app is [on the App Store](https://apps.apple.com/app/bloks-ai-agents/id6804453451),
+and the Android app [on Google Play](https://play.google.com/store/apps/details?id=dev.bloks.app).
 A packaged build updates itself.
 
 Or build it from source:
@@ -815,7 +817,8 @@ is a window onto Bloks on your computer: the same agents, their chats,
 and approval cards you answer with a tap. Nothing runs on the phone, so
 it is paired with each workspace you want on it. Pairing takes about a
 minute, with both on the same wifi, and works the same from a Mac, a
-Windows PC or Linux; the app calls it "your Mac" either way.
+Windows PC or Linux; the app calls it "your Mac" either way. The
+[Android app](https://play.google.com/store/apps/details?id=dev.bloks.app) pairs the same way, with the same steps.
 
 **On your computer**, in the workspace you want on the phone, open
 Settings, **Phone and devices**. Until a phone is paired, it walks you
