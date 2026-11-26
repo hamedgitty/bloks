@@ -148,7 +148,7 @@ export function hostedRefusal(method: string, path: string): { status: number; e
   // machine run for them (server/location.ts), so the phone never offers
   // it here and nothing here takes it or tells it.
   if (path === "/api/location" || path === "/api/agent/location") {
-    return { status: 409, error: "This workspace is hosted. Location from your iPhone goes only to a computer of your own, so it is not offered here." };
+    return { status: 409, error: "This workspace is hosted. Location from your phone goes only to a computer of your own, so it is not offered here." };
   }
   return null;
 }

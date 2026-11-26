@@ -219,7 +219,7 @@ test("the owner's own turn hears where they are, an agent reads it, and asks for
     ["GET", "/api/location"],
     ["DELETE", "/api/location"],
   ]);
-  assert.match(told.heard, /\(Sam is in Toronto, Canada, approximately, as of 10 minutes ago, from their iPhone\./);
+  assert.match(told.heard, /\(Sam is in Toronto, Canada, approximately, as of 10 minutes ago, from their phone\./);
   const [read, report, ownerRead, forget] = told.answers;
   assert.equal(read.status, 200);
   assert.equal(read.body.location.place, "Toronto, Canada");
@@ -290,7 +290,7 @@ test("a place watcher acts once on arriving, not on a wobble, again on the next 
 
   await phone(at(20 * MIN, TORONTO));
   assert.ok(await waitFor(() => arrivals().length === 1), "arriving never reached the agent");
-  assert.match(arrivals()[0], /Sam has arrived in Toronto\. Their iPhone placed them in Toronto, Canada 20 minutes ago/);
+  assert.match(arrivals()[0], /Sam has arrived in Toronto\. Their phone placed them in Toronto, Canada 20 minutes ago/);
   assert.match(arrivals()[0], /Send me the hotel address\./);
   await idle();
 

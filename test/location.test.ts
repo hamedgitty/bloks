@@ -201,7 +201,7 @@ describe("what an agent is told", () => {
     const line = where.contextLine({ name: "Sam", cli: "bloks" });
     assert.equal(
       line,
-      "(Sam is in Toronto, Canada, approximately, as of 10 minutes ago, from their iPhone. `bloks location` says how exact that is, and `bloks location --fresh` asks the phone for a new reading.)",
+      "(Sam is in Toronto, Canada, approximately, as of 10 minutes ago, from their phone. `bloks location` says how exact that is, and `bloks location --fresh` asks the phone for a new reading.)",
     );
     assert.match(where.contextLine({}) ?? "", /^\(The person you work for is in Toronto/);
     assert.doesNotMatch(where.contextLine({ name: "Sam" }) ?? "", /bloks/, "no command for an engine without one");
@@ -375,7 +375,7 @@ describe("places", () => {
     assert.equal(crossingWords("43.6777,-79.6248", 2_000, "arrive"), "is now within 2 km of 43.6777, -79.6248");
     const said = watcherTurn(
       { kind: "place", target: "Toronto", instruction: "Send the hotel address.", name: "Landing", once: true },
-      "Sam has arrived in Toronto. Their iPhone placed them in Toronto, Canada 3 minutes ago.",
+      "Sam has arrived in Toronto. Their phone placed them in Toronto, Canada 3 minutes ago.",
     );
     assert.match(said, /^Your watcher "Landing": Sam has arrived in Toronto\./);
     assert.match(said, /Send the hotel address\./);

@@ -122,6 +122,7 @@ test("a right claim waits for the owner, with the same four words on both sides"
   const out = inv.claim(i, { name: "Sam", tokenHash: t, device: "iphone" }, ctx());
   assert.ok(out.ok);
   assert.equal(out.invite.status, "waiting");
+  assert.equal(out.invite.claim?.device, "iphone");
   const phrase = inv.phraseOf(out.invite)!;
   assert.equal(phrase.split(" ").length, 4);
   assert.equal(phrase, people.joinPhrase(sha(i.code), t, "k".repeat(43)));
@@ -238,4 +239,13 @@ test("guesses on the same network are held to ten in ten minutes from one addres
   assert.equal(limiter.allow("10.0.0.2", 1_000), false);
   assert.ok(limiter.allow("10.0.0.3", 1_000), "another address has its own count");
   assert.ok(limiter.allow("10.0.0.2", 62_000), "and the window moves on");
+});
+
+test("a joiner on Android is said to be on Android, and an unknown device is a phone", () => {
+  const android = inv.claim(made(), { name: "Ada", tokenHash: token("c"), device: "android" }, ctx());
+  assert.ok(android.ok);
+  assert.equal(android.invite.claim?.device, "android");
+  const unknown = inv.claim(made(), { name: "Kai", tokenHash: token("d"), device: "toaster" }, ctx());
+  assert.ok(unknown.ok);
+  assert.equal(unknown.invite.claim?.device, "iphone");
 });

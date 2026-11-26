@@ -550,7 +550,7 @@ export class Whereabouts {
     const name = who.name?.trim() || "The person you work for";
     const exact = at.precision === "exact" ? "" : ", approximately";
     const more = who.cli ? ` \`${who.cli} location\` says how exact that is, and \`${who.cli} location --fresh\` asks the phone for a new reading.` : "";
-    return `(${name} is in ${placeWords(at)}${exact}, as of ${agoWords(age)}, from their iPhone.${more})`;
+    return `(${name} is in ${placeWords(at)}${exact}, as of ${agoWords(age)}, from their phone.${more})`;
   }
 
   /** What `bloks location` answers. */
@@ -559,17 +559,17 @@ export class Whereabouts {
     const at = this.usable();
     const fresh = who.cli ? `\`${who.cli} location --fresh\`` : "a fresh reading";
     if (sharing === "paused") {
-      return { sharing, location: null, note: "Location sharing is paused on their iPhone, so where they are is not shared. Do not guess; ask them, or ask them to resume it in the Bloks app." };
+      return { sharing, location: null, note: "Location sharing is paused on their phone, so where they are is not shared. Do not guess; ask them, or ask them to resume it in the Bloks app." };
     }
     if (sharing === "off") {
-      return { sharing, location: null, note: "Location sharing is off. They can turn it on in the Bloks app on their iPhone (Settings, Location). Do not guess where they are; ask." };
+      return { sharing, location: null, note: "Location sharing is off. They can turn it on in the Bloks app on their phone (Settings, Location). Do not guess where they are; ask." };
     }
-    if (!at) return { sharing, location: null, note: `Sharing is on, but their iPhone has not said where it is yet. Ask with ${fresh}, or ask them.` };
+    if (!at) return { sharing, location: null, note: `Sharing is on, but their phone has not said where it is yet. Ask with ${fresh}, or ask them.` };
     const age = this.clock() - at.observedAt;
     const fresh_ = freshness(age);
     const closed = this.background();
     const when = `Observed ${agoWords(age)} (${new Date(at.observedAt).toISOString()}).`;
-    const how = `It is ${precisionWords(at)}.${closed === false ? " Their iPhone says where it is only while Bloks is open on it, so it may be a while before the next reading." : ""}`;
+    const how = `It is ${precisionWords(at)}.${closed === false ? " Their phone says where it is only while Bloks is open on it, so it may be a while before the next reading." : ""}`;
     const advice =
       fresh_ === "current"
         ? at.precision === "exact"

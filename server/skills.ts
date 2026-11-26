@@ -362,7 +362,7 @@ Approval: required before categorizing anything as personal or writing to an acc
     id: "page-design",
     name: "Page design",
     description: "Read before making a page, report, dashboard or deck someone will open as a file. How to make it clear at a glance and finished on a phone and a computer, light and dark",
-    body: `Use this before you make a file a person will look at: a web page, a report, a comparison, a dashboard, a one pager, a slide deck. It opens in Bloks on a computer and on an iPhone, so it has to read at 390 pixels wide and in dark mode, and it is judged in the first two seconds.
+    body: `Use this before you make a file a person will look at: a web page, a report, a comparison, a dashboard, a one pager, a slide deck. It opens in Bloks on a computer and on a phone, so it has to read at 390 pixels wide and in dark mode, and it is judged in the first two seconds.
 
 Not for: a reply in the chat. A short answer, or one with some structure, belongs in the chat, drawn as interface when you can.
 
@@ -582,7 +582,7 @@ Bloks AI is a monthly allowance on their Bloks plan: no key or sign-in. Usage sh
 Connected apps and MCP servers, and Composio's keys, saved secrets and using Bloks from other AI apps. Where: Settings, Plugins (\`plugins\`); Settings, Apps and keys (\`apps\`); Plugins on the rail (\`plugins:apps\`). You: \`secret\` asks for a key through a secure field. Only the person: everything else.
 
 ## Phones, the web and Bloks Cloud
-The iPhone app pairs with each workspace; nothing runs on the phone. Location, when on, tells the owner's agents roughly where they are. With Bloks Cloud a workspace is reachable online for the phone, bloks.dev/web and people they invite, and each agent gets an email address. Where: Settings, Phone and devices (\`devices\`); Reachable online (\`workspace:online\`). You: \`location\`. Only the person: pairing, access, Cloud.
+The iPhone and Android apps pair with each workspace; nothing runs on the phone. Location, when on, tells the owner's agents roughly where they are. With Bloks Cloud a workspace is reachable online for the phone, bloks.dev/web and people they invite, and each agent gets an email address. Where: Settings, Phone and devices (\`devices\`); Reachable online (\`workspace:online\`). You: \`location\`. Only the person: pairing, access, Cloud.
 
 ## Telegram, Signal, chat apps and email
 Agents answer on Telegram or Signal; a room can be carried into Slack, Discord, WhatsApp or a Signal group; mail from anyone but the owner never runs in Full access. Where: Settings, Chat and email (\`chat\`). You: \`telegram\` sends a file to their chat with your bot; \`reply\` answers the group message that started a turn. Only the person sets these up.

@@ -11201,7 +11201,7 @@ setInterval(() => {
 /** What a place watcher says when its agent cannot tell from the readings
  * it gets, kept as its last error so the person and the agent can see it. */
 const APPROXIMATE_PLACE =
-  "Location is shared approximately, with no exact position, so a place given by coordinates cannot be told. Turn on Exact position in the Bloks app on the iPhone, or give the place by name.";
+  "Location is shared approximately, with no exact position, so a place given by coordinates cannot be told. Turn on Exact position in the Bloks app on the phone, or give the place by name.";
 
 /**
  * Every place watcher with something to do now: a reading on the other
@@ -11327,14 +11327,14 @@ function placeWatchNote(w: Watcher): string {
   const at = whereabouts.usable();
   const said = [
     sharing === "off"
-      ? "Location sharing is off on their iPhone, so this waits until they turn it on in the Bloks app (Settings, Location)."
+      ? "Location sharing is off on their phone, so this waits until they turn it on in the Bloks app (Settings, Location)."
       : sharing === "paused"
-        ? "Location sharing is paused on their iPhone, so this waits until they resume it."
+        ? "Location sharing is paused on their phone, so this waits until they resume it."
         : whereabouts.background() === false
-          ? "Their iPhone shares where they are only while Bloks is open on it, so this acts when they next open Bloks there. For it to act with the phone locked, they turn on Share while Bloks is closed (Settings, Location)."
+          ? "Their phone shares where they are only while Bloks is open on it, so this acts when they next open Bloks there. For it to act with the phone locked, they turn on Share while Bloks is closed (Settings, Location)."
           : null,
     at && at.latitude === undefined && parsePlace(w.target)?.kind === "point" ? APPROXIMATE_PLACE : null,
-    "It acts when the iPhone next says where they are, which it does after moving a fair way or arriving somewhere, so allow a few minutes either side.",
+    "It acts when the phone next says where they are, which it does after moving a fair way or arriving somewhere, so allow a few minutes either side.",
   ];
   return said.filter(Boolean).join(" ");
 }
@@ -11356,7 +11356,7 @@ function locationView() {
 function placeNews(w: Watcher, at: SharedLocation, now: number): string {
   return [
     placeCrossing(w),
-    `Their iPhone placed them in ${placeWords(at)} ${agoWords(now - at.observedAt)} (${new Date(at.observedAt).toISOString()}), ${precisionWords(at)}.`,
+    `Their phone placed them in ${placeWords(at)} ${agoWords(now - at.observedAt)} (${new Date(at.observedAt).toISOString()}), ${precisionWords(at)}.`,
   ].join(" ");
 }
 
@@ -33527,7 +33527,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       // a place follows the owner, so only for the owner's own agents, and
       // only where a phone can say where the owner is (not a hosted machine)
-      if (checked.value.kind === "place" && HOSTED) return json(res, 409, { error: "This workspace is hosted, and location from the iPhone goes only to a computer of your own, so a place watcher has nothing to go on here." });
+      if (checked.value.kind === "place" && HOSTED) return json(res, 409, { error: "This workspace is hosted, and location from the phone goes only to a computer of your own, so a place watcher has nothing to go on here." });
       const placeRefused = checked.value.kind === "place" ? locationRefusal(checked.value.botId, asAgent?.taskId) : null;
       if (placeRefused) return json(res, 403, { error: placeRefused });
       if (!makeWatcherRoom()) return json(res, 409, { error: NO_WATCHER_ROOM });
@@ -34868,7 +34868,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
       if (method !== "POST") return noStore(res, 405, { error: "GET, POST or DELETE" });
       const phone = caller && !caller.personId ? caller : null;
-      if (!phone) return noStore(res, 403, { error: "a place is said by a paired iPhone" });
+      if (!phone) return noStore(res, 403, { error: "a place is said by a paired phone" });
       let body: unknown;
       try {
         body = await readBody(req);
@@ -34904,7 +34904,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
               asked: true,
               answered: false,
               note:
-                "No new reading came from their iPhone in time. It answers only while Bloks is open on it; locked or in a pocket, it says where it is by itself only after moving a fair way or arriving somewhere. Use the reading above with its age said, if that is good enough for this, or ask them to open Bloks on their iPhone or to say where they are.",
+                "No new reading came from their phone in time. It answers only while Bloks is open on it; locked or in a pocket, it says where it is by itself only after moving a fair way or arriving somewhere. Use the reading above with its age said, if that is good enough for this, or ask them to open Bloks on their phone or to say where they are.",
             },
       });
     }

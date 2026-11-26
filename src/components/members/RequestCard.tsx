@@ -12,6 +12,7 @@ import { formatList, t, type MessageKey } from "@/lib/i18n";
 
 const ON_DEVICE: Record<JoinRequest["device"], MessageKey> = {
   iphone: "requestCard.onIphone",
+  android: "requestCard.onAndroid",
   mac: "requestCard.onMac",
   pc: "requestCard.onPc",
   computer: "requestCard.onComputer",

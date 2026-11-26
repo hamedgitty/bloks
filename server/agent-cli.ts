@@ -182,7 +182,7 @@ export const RULES: Rule[] = [
   // and how exactly (server/location.ts). Reading only, and only in the
   // owner's own conversations: the route refuses the rest. The report
   // itself, and forgetting it, are the person's (NEVER below).
-  { method: "GET", path: "/api/agent/location", why: "read where the person's iPhone last placed them, how long ago and how exactly, or ask it for a fresh reading" },
+  { method: "GET", path: "/api/agent/location", why: "read where the person's phone last placed them, how long ago and how exactly, or ask it for a fresh reading" },
   // The browser inside the Bloks window, signed in as the owner, which
   // the person watches and can take over (server/app-browser.ts). The
   // route refuses any turn the owner did not start, a site the workspace

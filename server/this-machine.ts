@@ -14,8 +14,9 @@ export const MACHINE_KINDS = ["mac", "pc", "computer"] as const;
 export type MachineKind = (typeof MACHINE_KINDS)[number];
 
 /** What a person joined from, as their app said it. A desktop says its
- * kind; older ones said "mac" whatever they ran on. */
-export const DEVICE_KINDS = ["iphone", ...MACHINE_KINDS, "browser"] as const;
+ * kind; older ones said "mac" whatever they ran on. The Android app says
+ * "android", and an app that says something else is taken for a phone. */
+export const DEVICE_KINDS = ["iphone", "android", ...MACHINE_KINDS, "browser"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
 
 export function machineKind(platform: string = process.platform): MachineKind {

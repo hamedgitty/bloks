@@ -58,6 +58,7 @@ import { formatList, formatNumber, t, type MessageKey } from "@/lib/i18n";
 
 const DEVICE_WORD: Record<NonNullable<Member["device"]>, MessageKey> = {
   iphone: "membersMembersPage.device.iphone",
+  android: "membersMembersPage.device.android",
   mac: "membersMembersPage.device.mac",
   pc: "membersMembersPage.device.pc",
   computer: "settingsPanel.computer",
