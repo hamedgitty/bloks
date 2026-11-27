@@ -5693,18 +5693,21 @@ engine and, for a member's turn, the person who started it, about a year
 of them, a convenience rather than an accounting record. It never claims
 to know what is left of a subscription or a key: nothing exposes that,
 and inventing the denominator would be worse than leaving it out. What a
-Claude or ChatGPT plan has left comes from the engine itself, as its last
-turn said (`server/plan-usage.ts`), and Bloks AI's from its service, as
-shares.
+Claude, ChatGPT, or Antigravity plan has left comes from the engine
+itself (`server/plan-usage.ts`): Claude Code and Codex report it on the
+side of each turn, and Antigravity reports its Gemini and Claude/GPT
+quota pools through its read-only `agy -p "/usage" --output-format json`
+command alongside the plan tier from ACP `session/new`. Bloks AI's comes
+from its service, as shares.
 
 A turn its engine never ran is not usage (`turnRan`): the program is not
 there or could not start, or Bloks refused the turn before the words
 went. It is not counted unless the engine said it used something after
 all, and a day's bucket that holds only turns that failed with nothing
 to show (`carriesUsage`) is left out of the report and its menus. Limits
-shows a Claude Code or Codex plan only for an engine installed here, one
-with a plan reading, or one that answered a turn in the span in view, so
-a computer without either CLI shows neither.
+shows a Claude Code, Codex, or Antigravity plan only for an engine
+installed here, one with a plan reading, or one that answered a turn in
+the span in view, so a computer without those CLIs shows none of them.
 
 A cost is an engine's own price when it reports one (OpenRouter does, as
 `usage.cost`). Most API engines report tokens and no price, so a turn that

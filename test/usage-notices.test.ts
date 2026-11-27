@@ -296,7 +296,10 @@ test("plan notice titles identify reported windows without assigning scope to ot
   const reported = [
     { id: "five_hour", minutes: 300 }, { id: "seven_day", minutes: 10_080 },
     { id: "seven_day_opus", minutes: 10_080 }, { id: "seven_day_sonnet", minutes: 10_080 },
-    { id: "seven_day_overage_included", minutes: 10_080 }, { id: "primary", minutes: 90 },
+    { id: "seven_day_overage_included", minutes: 10_080 },
+    { id: "gemini-5h", minutes: 300 }, { id: "gemini-weekly", minutes: 10_080 },
+    { id: "3p-5h", minutes: 300 }, { id: "3p-weekly", minutes: 10_080 },
+    { id: "primary", minutes: 90 },
     { id: "secondary", minutes: 1_440 }, { id: "model_new", minutes: 2_880 },
     { id: "other_new", minutes: null }, { id: "\u202eseven_day", minutes: 300 },
     { id: "zero_minutes", minutes: 0 },
@@ -310,9 +313,11 @@ test("plan notice titles identify reported windows without assigning scope to ot
 
 test("plan identity and reset are localized together", async () => {
   const notice: UsageNotice = { ...NOTICE, level: "stop", usedPercent: 100, resetsAt: NOW + 90 * 60_000, planWindow: { id: "five_hour", minutes: 300 } };
+  const agyNotice: UsageNotice = { ...notice, source: "agy", planWindow: { id: "3p-5h", minutes: 300 } };
   await setLanguage("es");
   try {
     assert.equal(noticeTitle(notice, NOW), "Límite de 5 horas: Límite alcanzado");
+    assert.equal(noticeTitle(agyNotice, NOW), "Límite de 5 horas, Claude y GPT: Límite alcanzado");
     assert.equal(noticeLine(notice, NOW), "100 % usado · Se restablece en 1 h 30 min");
     assert.equal(planResetLine(NOW + 30_000, NOW), "Se restablece en 1 min");
   } finally {

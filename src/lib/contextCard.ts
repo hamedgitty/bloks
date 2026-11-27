@@ -166,13 +166,25 @@ const WEEKLY_FOR: Record<string, string> = {
   seven_day_sonnet: "Sonnet",
 };
 
-/** A window by its length, which is how both engines describe them. A
+/** Antigravity's model-group buckets, by their group label. Must match
+ * SCOPED_WINDOWS in server/plan-usage.ts in English. */
+const SCOPED_WINDOWS: Record<string, () => string> = {
+  "gemini-5h": () => "Gemini",
+  "gemini-weekly": () => "Gemini",
+  "3p-5h": () => t("contextCard.claudeAndGpt"),
+  "3p-weekly": () => t("contextCard.claudeAndGpt"),
+};
+
+/** A window by its length, which is how the engines describe them. A
  * length that is not whole hours or days is said in minutes rather than
  * rounded: ninety minutes is not a 2-hour limit. A window Bloks has no
  * name for says the engine's beside its length, so two are told apart.
  * The composer's notice names a window the same way. */
 export function planWindowLabel(window: Pick<PlanWindow, "id" | "minutes">): string {
   const label = windowLength(window);
+  if (Object.hasOwn(SCOPED_WINDOWS, window.id)) {
+    return t("contextCard.windowFor", { window: label, model: SCOPED_WINDOWS[window.id]() });
+  }
   if (NAMED_PLAN_WINDOWS.has(window.id)) return label;
   const name = planWindowName(window.id);
   return name ? t("contextCard.namedWindow", { window: label, name }) : label;

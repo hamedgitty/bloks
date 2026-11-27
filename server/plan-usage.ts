@@ -2,8 +2,11 @@
 //
 // Claude Code and Codex both report the limits of the subscription they
 // are signed in with, on the side of every turn: Claude Code as a
-// `rate_limit_event`, Codex as `account/rateLimits/updated`. Bloks read
-// Claude Code's only to know when a limit had stopped a turn (see
+// `rate_limit_event`, Codex as `account/rateLimits/updated`. Antigravity
+// does not carry quota in ACP frames, so the ACP driver asks its
+// read-only `agy -p "/usage" --output-format json` command for its
+// model-group buckets (Gemini models, and Claude and GPT models). Bloks
+// read Claude Code's only to know when a limit had stopped a turn (see
 // server/failover.ts). Kept, the same numbers answer the question a
 // person has before sending something long: starting a fresh
 // conversation does not help when the week's limit is nearly used up
@@ -20,7 +23,7 @@
 // Everything here is pure.
 
 import type { PlanUsage, PlanWindow, UsageLevel, UsageNotice } from "./contracts.ts";
-import { NAMED_PLAN_WINDOWS, reportedPlanWindow } from "./plan-window.ts";
+import { NAMED_PLAN_WINDOWS, planWindowName, reportedPlanWindow } from "./plan-window.ts";
 
 /** How long each of Claude Code's windows is, by its name for it. */
 const CLAUDE_WINDOW_MINUTES: Record<string, number> = {
@@ -114,7 +117,103 @@ export function codexPlanUsage(rateLimits: unknown, now = Date.now()): PlanUsage
   return { windows, plan, at: now };
 }
 
+/** How long one of Antigravity's buckets is, from its window token
+ * ("5h", "weekly") or its known bucket id. */
+function antigravityWindowMinutes(window: unknown, id: string): number | null {
+  if (typeof window === "string") {
+    const token = window.trim().toLowerCase();
+    if (token === "weekly") return 7 * 24 * 60;
+    if (token === "daily") return 24 * 60;
+    const match = /^(\d+)\s*([mhd])$/.exec(token);
+    if (match) {
+      const amount = Number(match[1]);
+      if (Number.isSafeInteger(amount) && amount > 0) {
+        return match[2] === "d" ? amount * 24 * 60 : match[2] === "h" ? amount * 60 : amount;
+      }
+    }
+  }
+  if (id === "gemini-5h" || id === "3p-5h") return 5 * 60;
+  if (id === "gemini-weekly" || id === "3p-weekly") return 7 * 24 * 60;
+  return null;
+}
+
+/** An ISO 8601 reset time (or numeric epoch) in milliseconds. Untouched
+ * Antigravity buckets report the Unix epoch ("1970-01-01T00:00:00Z"),
+ * which means no reset is scheduled yet rather than an expired window. */
+function resetTimeMs(value: unknown): number | null {
+  if (typeof value === "number") return epochMs(value);
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+}
+
+/**
+ * The plan's windows from Antigravity's read-only print-mode usage
+ * command (`agy -p "/usage" --output-format json`).
+ *
+ * Each model group (Gemini models, Claude and GPT models) carries its
+ * own 5-hour and weekly buckets as `remaining_fraction` in [0, 1],
+ * converted here to the share used. Untouched buckets report the Unix
+ * epoch for `reset_time`, which becomes null so the window stays visible.
+ * Disabled or non-numeric buckets are skipped. Null when nothing
+ * measurable is in the payload.
+ */
+export function antigravityPlanUsage(payload: unknown, plan: string | null = null, now = Date.now()): PlanUsage | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as Record<string, any>;
+  if (typeof root.status === "string" && root.status.toUpperCase() !== "SUCCESS") return null;
+  const data = root.command && typeof root.command === "object" ? root.command.data : root;
+  const groups = Array.isArray(data?.groups) ? data.groups : null;
+  if (!groups) return null;
+  const windows: PlanWindow[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    if (!group || typeof group !== "object" || !Array.isArray(group.buckets)) continue;
+    const groupName = typeof group.name === "string" ? group.name.trim() : "";
+    for (const bucket of group.buckets) {
+      if (!bucket || typeof bucket !== "object" || bucket.disabled === true) continue;
+      const remaining = bucket.remaining_fraction;
+      if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 1) continue;
+      const rawId = typeof bucket.id === "string" && bucket.id.trim()
+        ? bucket.id.trim()
+        : [
+            groupName,
+            typeof bucket.window === "string" ? bucket.window.trim() : typeof bucket.name === "string" ? bucket.name.trim() : "",
+          ].filter(Boolean).join(" ");
+      if (!rawId || !planWindowName(rawId)) continue;
+      const id = Array.from(rawId).slice(0, 200).join("");
+      if (seen.has(id)) continue;
+      seen.add(id);
+      windows.push({
+        id,
+        minutes: antigravityWindowMinutes(bucket.window, id),
+        used: Math.max(0, 1 - remaining),
+        resetsAt: resetTimeMs(bucket.reset_time),
+      });
+    }
+  }
+  if (!windows.length) return null;
+  const rawPlan = typeof plan === "string" && plan.trim()
+    ? plan
+    : typeof data?.tier?.name === "string"
+      ? data.tier.name
+      : typeof data?.tier === "string"
+        ? data.tier
+        : null;
+  const cleanPlan = rawPlan ? (planWindowName(rawPlan) || null) : null;
+  return { windows, plan: cleanPlan, at: now };
+}
+
 // ── notices ────────────────────────────────────────────────────────────
+
+/** Antigravity's model-group buckets, by the group's name in English.
+ * Must match SCOPED_WINDOWS in src/lib/contextCard.ts. */
+const SCOPED_WINDOWS: Record<string, string> = {
+  "gemini-5h": "Gemini",
+  "gemini-weekly": "Gemini",
+  "3p-5h": "Claude and GPT",
+  "3p-weekly": "Claude and GPT",
+};
 
 /** Past this share a window is close to its limit, whatever the engine said. */
 const NEAR = 0.8;
@@ -145,6 +244,7 @@ function noticeWindow(window: PlanWindow): string | null {
     else if (minutes % 60 === 0) label = `${minutes / 60}-hour limit`;
     else label = `${minutes}-minute limit`;
   }
+  if (Object.hasOwn(SCOPED_WINDOWS, id)) return `${label}, ${SCOPED_WINDOWS[id]}`;
   return NAMED_PLAN_WINDOWS.has(id) ? label : `${label} (${name})`;
 }
 
