@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import type {
   DriverCreateInput,
   ModelCatalog,
+  PlanUsage,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -45,6 +46,9 @@ import { outReason } from "../failover.ts";
 import { attachRpc, type RpcLink } from "../harness/jsonrpc-stdio.ts";
 import { isNewer, versionOf } from "../engine-updates.ts";
 import { killTree, launchSpec, onPath, widenPath } from "../path.ts";
+import { antigravityPlanUsage } from "../plan-usage.ts";
+import { planWindowName } from "../plan-window.ts";
+import { MAIN_ACCOUNT } from "../engine-accounts.ts";
 import { callSignature } from "../repeats.ts";
 import { appendNative } from "./native.ts";
 import { installCommand } from "../engine-commands.ts";
@@ -160,6 +164,15 @@ export interface AcpSpec {
    * ordinary end_turn and keeps the reason to itself. Read after the
    * turn; `since` is when it started, so an old failure is not blamed. */
   turnError?: (sessionId: string, since: number) => string | null;
+  /** The subscription plan's name as an ACP session carries it (for
+   * example Antigravity's `_meta.antigravity.tier.name`). */
+  planName?: (session: any) => string | null;
+  /** Non-interactive CLI arguments that report subscription plan limits
+   * without starting a turn or spending quota, and the stdout parser. */
+  planUsage?: {
+    args: readonly string[];
+    parse: (stdout: string, plan: string | null, now?: number) => PlanUsage | null;
+  };
 }
 
 export interface AcpConfig {
@@ -621,6 +634,31 @@ const ANTIGRAVITY_FALLBACK_MODELS: ModelCatalog = {
 
 const CATALOG_FRESH_MS = 10 * 60_000;
 const CATALOG_RETRY_MS = 60_000;
+const PLAN_FRESH_MS = 60_000;
+const PLAN_MAX_BYTES = 256 * 1024;
+
+/** Antigravity's subscription tier name as session/new reports it. */
+function antigravityPlanName(session: any): string | null {
+  const name = session?._meta?.antigravity?.tier?.name;
+  return typeof name === "string" ? (planWindowName(name) || null) : null;
+}
+
+/** Parse stdout from `agy -p "/usage" --output-format json`. */
+function parseAntigravityPlanUsage(stdout: string, plan: string | null, now = Date.now()): PlanUsage | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+  try {
+    return antigravityPlanUsage(JSON.parse(trimmed), plan, now);
+  } catch {
+    const line = trimmed.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{")).at(-1);
+    if (!line) return null;
+    try {
+      return antigravityPlanUsage(JSON.parse(line), plan, now);
+    } catch {
+      return null;
+    }
+  }
+}
 
 /** A legacy print-mode Antigravity id, which carried the effort as a
  * suffix (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`), as its base
@@ -895,14 +933,108 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
       // are probed once with a throwaway session, so the picker starts
       // with real models. A failed probe leaves the placeholder; the
       // first turn replaces it with what the agent serves.
+      let disposed = false;
+      let knownPlan: string | null = null;
+      let latestPlan: PlanUsage | null = null;
+      let planAsked = 0;
+      let planProbing: Promise<void> | null = null;
+      let planPendingAgain = false;
+
+      const noteSessionPlan = (opened: any) => {
+        const name = spec.planName?.(opened);
+        if (!name) return;
+        knownPlan = name;
+        if (latestPlan && latestPlan.plan !== name) latestPlan = { ...latestPlan, plan: name };
+      };
+
+      const runPlanProbe = (force = false): Promise<void> => {
+        if (!spec.planUsage || disposed) return Promise.resolve();
+        if (planProbing) {
+          if (force) planPendingAgain = true;
+          return planProbing;
+        }
+        const now = Date.now();
+        if (!force && now - planAsked < PLAN_FRESH_MS) return Promise.resolve();
+        planAsked = now;
+        planPendingAgain = false;
+        const usageSpec = spec.planUsage;
+        planProbing = (async () => {
+          try {
+            widenPath();
+            await seeded();
+            if (disposed) return;
+            const launch = launchSpec(config.cli, [...usageSpec.args]);
+            const stdout = await new Promise<string | null>((resolve) => {
+              const child = spawn(launch.command, launch.args, {
+                cwd: tmpdir(),
+                env: childEnv(),
+                stdio: ["ignore", "pipe", "ignore"],
+                detached: OWN_GROUP,
+                windowsHide: true,
+                windowsVerbatimArguments: launch.windowsVerbatimArguments,
+              });
+              engines.add(child);
+              let chunks = "";
+              let overflow = false;
+              let settled = false;
+              const finish = (value: string | null) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(value);
+              };
+              const timer = setTimeout(() => {
+                if (process.platform === "win32") {
+                  try {
+                    killTree(child.pid, () => child.kill("SIGTERM"));
+                  } catch {
+                    /* already gone */
+                  }
+                } else {
+                  signalGroup(child, "SIGTERM");
+                }
+                finish(null);
+              }, PROBE_TIMEOUT_MS);
+              timer.unref?.();
+              child.stdout?.on("data", (chunk: Buffer | string) => {
+                if (overflow) return;
+                chunks += chunk.toString();
+                if (chunks.length > PLAN_MAX_BYTES) {
+                  overflow = true;
+                  chunks = "";
+                }
+              });
+              child.on("error", () => finish(null));
+              child.on("close", (code) => finish(!overflow && code === 0 ? chunks : null));
+            });
+            if (disposed || !stdout) return;
+            const parsed = usageSpec.parse(stdout, knownPlan);
+            if (parsed) latestPlan = parsed;
+          } catch {
+            /* unavailable, signed out, or running on an API key with no plan quota */
+          } finally {
+            planProbing = null;
+            if (planPendingAgain && !disposed) {
+              planPendingAgain = false;
+              void runPlanProbe(true);
+            }
+          }
+        })();
+        return planProbing;
+      };
+
       let catalogAsked = 0;
       let probing: Promise<void> | null = null;
+      const onProbeSession = (opened: any) => {
+        if (spec.effortOption) rememberDefaultEffort(opened);
+        noteSessionPlan(opened);
+      };
       const runCatalogProbe = (notify: boolean): Promise<void> =>
         (probing ??= (async () => {
           catalogAsked = Date.now();
           widenPath();
           await seeded();
-          const catalog = await probeCatalog(spec, config.cli, childEnv(), spec.effortOption ? rememberDefaultEffort : undefined);
+          const catalog = await probeCatalog(spec, config.cli, childEnv(), spec.effortOption || spec.planName ? onProbeSession : undefined);
           const before = JSON.stringify([models.default, models.options, models.note]);
           if (catalog) {
             models.options = catalog.options;
@@ -911,6 +1043,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               models.checkedAt = Date.now();
               delete models.note;
             }
+            if (spec.planUsage) void runPlanProbe(true);
           } else if (spec.reprobeCatalog && !models.checkedAt) {
             models.note = `${spec.name} did not list this account's models, so these are the ones built into Bloks.${spec.signIn ? ` ${spec.signIn[0].toUpperCase()}${spec.signIn.slice(1)}, and Bloks asks it again.` : ""}`;
           }
@@ -1640,6 +1773,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
             }
             sessionId = session?.sessionId ?? null;
             if (!sessionId) throw new Error(`${spec.name} did not open a session`);
+            if (!turn.place) noteSessionPlan(session);
             const startupInfo = session?._meta?.piAcp?.startupInfo;
             if (typeof startupInfo === "string" && startupInfo.trim()) state.banner = startupInfo;
 
@@ -1683,6 +1817,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
                 session = await within(rpc.request("session/new", { cwd, mcpServers }), "restoring the default reasoning effort", spec.name);
                 sessionId = session?.sessionId ?? null;
                 if (!sessionId) throw new Error(`${spec.name} did not open a session`);
+                if (!turn.place) noteSessionPlan(session);
                 freshSession = true;
                 baseWords = turn.handoff;
                 await selectModel();
@@ -1760,6 +1895,8 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               prepared?.settle("uncertain");
               turn.preparation?.unavailable();
               throw error;
+            } finally {
+              if (!turn.place && !state.stopping) void runPlanProbe(true);
             }
             turn.preparation?.unavailable();
             const usage = result?.usage;
@@ -1903,6 +2040,15 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
               },
             }
           : {}),
+        ...(spec.planUsage
+          ? {
+              planUsage: (account = MAIN_ACCOUNT) => {
+                if (account !== MAIN_ACCOUNT) return null;
+                if (models.checkedAt || latestPlan) void runPlanProbe(false);
+                return latestPlan;
+              },
+            }
+          : {}),
         adapter: {
           provider: spec.kind,
           // images: handed the turn's pictures, which go on only to an
@@ -1925,6 +2071,7 @@ export function acpDriver(spec: AcpSpec): ProviderDriver<AcpConfig> {
           },
         },
         dispose: async () => {
+          disposed = true;
           const turns = [...active.values()];
           for (const turn of turns) {
             if (spec.groupCleanup) void turn.interrupt();
@@ -2179,6 +2326,11 @@ export const ACP_SPECS: readonly AcpSpec[] = [
     keepResumedEffort: true,
     addCachedReads: true,
     reprobeCatalog: true,
+    planName: antigravityPlanName,
+    planUsage: {
+      args: ["-p", "/usage", "--output-format", "json"],
+      parse: parseAntigravityPlanUsage,
+    },
     signIn: "run `agy` once to sign in with Google",
     install: installCommand("antigravity") ?? "curl -fsSL https://antigravity.google/cli/install.sh | bash",
     unlistedModel: resolveAntigravityModel,

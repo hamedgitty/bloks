@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudePlanUsage, codexPlanUsage, planNotices } from "../server/plan-usage.ts";
+import { antigravityPlanUsage, claudePlanUsage, codexPlanUsage, planNotices } from "../server/plan-usage.ts";
 import type { PlanWindow } from "../server/contracts.ts";
 import { startHarness, type Harness } from "./helpers/server.ts";
 import { waitFor } from "./helpers/turns.ts";
@@ -105,6 +105,61 @@ test("Codex's primary and secondary windows are percents, read as shares", () =>
   }
 });
 
+test("Antigravity's model-group buckets become shares used, with untouched epoch-0 resets kept visible", () => {
+  const payload = {
+    conversation_id: "",
+    status: "SUCCESS",
+    num_turns: 0,
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              { id: "gemini-weekly", window: "weekly", remaining_fraction: 0.875, reset_time: "2026-12-03T09:16:51Z" },
+              { id: "gemini-5h", window: "5h", remaining_fraction: 0.625, reset_time: "2026-11-27T03:12:34Z" },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              { id: "3p-weekly", window: "weekly", remaining_fraction: 1, reset_time: "1970-01-01T00:00:00Z" },
+              { id: "3p-5h", window: "5h", remaining_fraction: 0, reset_time: "2026-11-27T04:00:00Z" },
+              { id: "disabled-bucket", window: "5h", remaining_fraction: 0.5, disabled: true },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const plan = antigravityPlanUsage(payload, "Google AI Pro", NOW);
+  assert.deepEqual(plan, {
+    windows: [
+      { id: "gemini-weekly", minutes: 10_080, used: 0.125, resetsAt: Date.parse("2026-12-03T09:16:51Z") },
+      { id: "gemini-5h", minutes: 300, used: 0.375, resetsAt: Date.parse("2026-11-27T03:12:34Z") },
+      { id: "3p-weekly", minutes: 10_080, used: 0, resetsAt: null },
+      { id: "3p-5h", minutes: 300, used: 1, resetsAt: Date.parse("2026-11-27T04:00:00Z") },
+    ],
+    plan: "Google AI Pro",
+    at: NOW,
+  });
+
+  // Control characters in tier names are stripped, and invalid or failed payloads yield null.
+  assert.equal(antigravityPlanUsage(payload, "\u202eGoogle AI Ultra", NOW)?.plan, "Google AI Ultra");
+  for (const nonsense of [
+    null,
+    {},
+    { status: "ERROR", command: { name: "usage", data: { groups: [{ buckets: [{ id: "gemini-5h", remaining_fraction: 0.5 }] }] } } },
+    { status: "SUCCESS", command: { name: "usage", data: { groups: [{ buckets: [{ id: "gemini-5h", remaining_fraction: 1.2 }] }] } } },
+    { status: "SUCCESS", command: { name: "usage", data: { groups: [{ buckets: [{ id: "gemini-5h", remaining_fraction: -0.1 }] }] } } },
+    { status: "SUCCESS", command: { name: "usage", data: { groups: [{ buckets: [{ id: "gemini-5h", remaining_fraction: "0.5" }] }] } } },
+    { status: "SUCCESS", command: { name: "usage", data: { groups: [] } } },
+  ]) {
+    assert.equal(antigravityPlanUsage(nonsense, null, NOW), null, JSON.stringify(nonsense));
+  }
+});
+
 // ── the notice above the composer ──────────────────────────────────────
 
 const HOUR = 60 * 60_000;
@@ -164,6 +219,10 @@ test("simultaneous plan limits retain their reported window and model in the wir
     windowAt("seven_day", 10_080, 1, 0.5),
     windowAt("seven_day_opus", 10_080, 1, 0.5),
     windowAt("seven_day_sonnet", 10_080, 1, 0.5),
+    windowAt("gemini-5h", 300, 1, 0.5),
+    windowAt("gemini-weekly", 10_080, 1, 0.5),
+    windowAt("3p-5h", 300, 1, 0.5),
+    windowAt("3p-weekly", 10_080, 1, 0.5),
     windowAt("primary", 90, 1, 0.5),
     windowAt("secondary", 90, 1, 0.5),
     { id: "model_new", minutes: null, used: 1, resetsAt: null },
@@ -172,10 +231,14 @@ test("simultaneous plan limits retain their reported window and model in the wir
   assert.deepEqual(notices.map((n) => n.planWindow), windows.map(({ id, minutes }) => ({ id, minutes })));
   assert.deepEqual(notices.map((n) => n.title), [
     "5-hour limit: Limit reached", "Weekly limit: Limit reached", "Weekly limit, Opus: Limit reached",
-    "Weekly limit, Sonnet: Limit reached", "90-minute limit: Limit reached",
-    "90-minute limit: Limit reached", "Limit (model_new): Limit reached",
+    "Weekly limit, Sonnet: Limit reached", "5-hour limit, Gemini: Limit reached", "Weekly limit, Gemini: Limit reached",
+    "5-hour limit, Claude and GPT: Limit reached", "Weekly limit, Claude and GPT: Limit reached",
+    "90-minute limit: Limit reached", "90-minute limit: Limit reached", "Limit (model_new): Limit reached",
   ]);
   assert.equal(new Set(notices.map((n) => n.id)).size, windows.length);
+  // Contradictory duration or control-prefixed spoofed Antigravity IDs must not claim model scope
+  assert.equal(planNotices("agy", planOf({ id: "gemini-5h", minutes: 10_080, used: 1, resetsAt: null }), NOW)[0].title, "Limit reached");
+  assert.equal(planNotices("agy", planOf({ id: "\u00003p-5h", minutes: 300, used: 1, resetsAt: null }), NOW)[0].title, "5-hour limit (3p-5h): Limit reached");
 });
 
 test("fallback titles keep severity and avoid misleading or unbounded window metadata", () => {
@@ -398,4 +461,127 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     plan: "pro",
     at: usage.codex.at,
   });
+});
+
+test("Antigravity's Gemini and Claude/GPT quotas reach /api/plan-usage and never an agent", async (t) => {
+  const dir = home("bloks-plan-agy-");
+  const cli = join(dir, "fake-agy.mjs");
+  const stateFile = join(dir, "state.json");
+  const runs = join(dir, "runs.jsonl");
+  const reset5h = new Date(Date.now() + 2 * 3_600_000).toISOString();
+  const resetWeek = new Date(Date.now() + 5 * 24 * 3_600_000).toISOString();
+  writeFileSync(stateFile, JSON.stringify({ afterTurn: false }));
+  writeFileSync(runs, "");
+  writeFileSync(
+    cli,
+    `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const args = process.argv.slice(2);
+if (args[0] === "--version") { console.log("1.5.18"); process.exit(0); }
+if (args[0] === "-p" && args[1] === "/usage") {
+  const { afterTurn } = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, "utf8"));
+  console.log(JSON.stringify({
+    status: "SUCCESS",
+    num_turns: 0,
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              { id: "gemini-weekly", window: "weekly", remaining_fraction: afterTurn ? 0.8 : 0.9, reset_time: ${JSON.stringify(resetWeek)} },
+              { id: "gemini-5h", window: "5h", remaining_fraction: afterTurn ? 0.5 : 0.75, reset_time: ${JSON.stringify(reset5h)} },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              { id: "3p-weekly", window: "weekly", remaining_fraction: 1, reset_time: "1970-01-01T00:00:00Z" },
+              { id: "3p-5h", window: "5h", remaining_fraction: afterTurn ? 0.15 : 1, reset_time: afterTurn ? ${JSON.stringify(reset5h)} : "1970-01-01T00:00:00Z" },
+            ],
+          },
+        ],
+      },
+    },
+  }));
+  process.exit(0);
+}
+const say = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+const configOptions = [
+  { id: "model", category: "model", type: "select", currentValue: "gemini-4-neon", options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }] },
+  { id: "mode", category: "mode", type: "select", currentValue: "default", options: [{ value: "default", name: "Default" }] },
+  { id: "thought_level", category: "thought_level", type: "select", currentValue: "high", options: [{ value: "high", name: "High" }] },
+];
+createInterface({ input: process.stdin }).on("line", async (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.id === undefined || !msg.method) return;
+  const reply = (result) => say({ jsonrpc: "2.0", id: msg.id, result });
+  if (msg.method === "initialize") return reply({ protocolVersion: 1, agentCapabilities: { _meta: { antigravity: { tier: true } } } });
+  if (msg.method === "session/new") {
+    return reply({
+      sessionId: "agy-plan-1",
+      configOptions,
+      _meta: { antigravity: { tier: { name: "Google AI Pro", id: "g1-pro-tier" } } },
+    });
+  }
+  if (msg.method === "session/prompt") {
+    const text = String(msg.params?.prompt?.[0]?.text ?? "");
+    let asked = null;
+    if (text.includes("ASK")) {
+      const res = await fetch(process.env.BLOKS_URL + "/api/plan-usage", { headers: { authorization: "Bearer " + process.env.BLOKS_TOKEN } });
+      asked = res.status;
+    }
+    appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ text, asked }) + "\\n");
+    writeFileSync(${JSON.stringify(stateFile)}, JSON.stringify({ afterTurn: true }));
+    say({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done" } } } });
+    return reply({ stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 10 } });
+  }
+  reply({});
+});
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(join(dir, ".bloks", "config.json"), JSON.stringify({ instances: { agy: { driver: "antigravity", config: { cli } } } }));
+  const h = await startHarness({ HOME: dir });
+  t.after(async () => {
+    await h.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Startup probe fills in both model groups and tier before the first turn.
+  const seeded = await waitFor(async () => Boolean((await h.json("/api/plan-usage")).usage?.agy), 15_000);
+  assert.ok(seeded, `Antigravity startup plan probe never populated: ${h.logs()}`);
+  const initial = (await h.json("/api/plan-usage")).usage.agy;
+  assert.equal(initial.plan, "Google AI Pro");
+  assert.deepEqual(
+    initial.windows.map((w: any) => [w.id, w.minutes, Number(w.used.toFixed(2)), w.resetsAt === null ? null : "set"]),
+    [
+      ["gemini-weekly", 10_080, 0.1, "set"],
+      ["gemini-5h", 300, 0.25, "set"],
+      ["3p-weekly", 10_080, 0, null],
+      ["3p-5h", 300, 0, null],
+    ],
+  );
+
+  // After a turn, the post-turn refresh picks up updated Gemini and Claude/GPT usage,
+  // while an agent credential asking /api/plan-usage is refused and prompts stay clean.
+  const bot = await agentOn(h, "agy", "gemini-4-neon");
+  await say(h, bot.id, "ASK about quota");
+  const refreshed = await waitFor(async () => {
+    const win = (await h.json("/api/plan-usage")).usage?.agy?.windows?.find((w: any) => w.id === "3p-5h");
+    return Boolean(win && win.used >= 0.8);
+  }, 15_000);
+  assert.ok(refreshed, "post-turn Antigravity quota refresh did not land");
+  const turns = readFileSync(runs, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(turns[0].asked, 403, "an agent read the person's Antigravity plan");
+  assert.doesNotMatch(turns[0].text, /gemini-5h|3p-5h|Google AI Pro/i, "plan details leaked into a prompt");
+
+  // Composer usage notices surface the nearing Claude/GPT window.
+  const { notices } = await h.json(`/api/usage-notices?thread=${encodeURIComponent(bot.threadId)}`);
+  assert.ok(
+    notices.some((n: any) => n.source === "agy" && n.planWindow?.id === "3p-5h" && n.level === "warn" && n.title === "5-hour limit, Claude and GPT: Approaching limit"),
+    `expected Claude and GPT warning notice, got ${JSON.stringify(notices)}`,
+  );
 });

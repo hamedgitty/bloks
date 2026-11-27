@@ -289,9 +289,9 @@ export function headlineNotes(report: Pick<UsageReport, "total" | "unpricedTurns
 
 // ── on a plan ──────────────────────────────────────────────────────────
 
-/** Engines signed in to a Claude or ChatGPT plan, which say what the
- * plan has left as they answer. */
-export const PLAN_KINDS: readonly string[] = ["claudeAgent", "codex"];
+/** Engines signed in to a Claude, ChatGPT, or Antigravity plan, which
+ * report what the plan has left. */
+export const PLAN_KINDS: readonly string[] = ["claudeAgent", "codex", "antigravity"];
 
 export function onPlan(driverKind: string | null | undefined): boolean {
   return PLAN_KINDS.includes(driverKind ?? "");
@@ -320,7 +320,7 @@ export function planEngines<T extends { instanceId: string; driverKind: string; 
 /** Of those, the ones that never give a price. Claude Code gives a turn's
  * cost even on a plan, so a Claude turn with none failed before it said
  * anything, and saying its plan reports no dollar figure would be wrong. */
-const PRICELESS_PLAN_KINDS: readonly string[] = ["codex"];
+const PRICELESS_PLAN_KINDS: readonly string[] = ["codex", "antigravity"];
 
 export function planWithoutPrice(driverKind: string | null | undefined): boolean {
   return PRICELESS_PLAN_KINDS.includes(driverKind ?? "");

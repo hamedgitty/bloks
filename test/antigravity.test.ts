@@ -63,6 +63,9 @@ interface FakeAgyOptions {
   models?: Array<{ value: string; name: string; efforts?: string[] }>;
   fullAuto?: boolean;
   probeModels?: boolean;
+  tier?: string;
+  usageJson?: unknown;
+  usageExitCode?: number;
 }
 
 async function createFakeAgy(opts: FakeAgyOptions = {}) {
@@ -82,6 +85,11 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2);
 if (args[0] === "--version") { console.log(${JSON.stringify(opts.version ?? "1.5.14")}); process.exit(0); }
+if (args[0] === "-p") {
+  const exitCode = ${JSON.stringify(opts.usageExitCode ?? (opts.usageJson !== undefined ? 0 : 2))};
+  if (${JSON.stringify(opts.usageJson !== undefined)}) console.log(${JSON.stringify(opts.usageJson === undefined ? "" : JSON.stringify(opts.usageJson))});
+  process.exit(exitCode);
+}
 writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(args));
 const say = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -128,7 +136,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   if (msg.method === "initialize") {
     reply({ protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
   } else if (msg.method === "session/new") {
-    reply({ sessionId: "sess-new", configOptions: configOptions() });
+    reply({ sessionId: "sess-new", configOptions: configOptions(), ...(${JSON.stringify(opts.tier ?? null)} ? { _meta: { antigravity: { tier: { name: ${JSON.stringify(opts.tier ?? "")} } } } } : {}) });
   } else if (msg.method === "session/resume") {
     ${opts.onResume ?? 'reply({ sessionId: msg.params.sessionId, configOptions: configOptions() });'}
   } else if (msg.method === "session/set_config_option") {
@@ -612,4 +620,59 @@ test("Stop gives agy time to handle session/cancel so detached tool helpers are 
   assert.ok(agy.requests().some((r) => r.method === "session/cancel"));
   const end = agy.events.at(-1);
   assert.equal(end?.type === "turn.completed" && end.stopReason, "interrupted");
+});
+
+test("Antigravity reads plan tier and Gemini plus Claude/GPT quota out of band, and tolerates API-key exit code 2", async (t) => {
+  const usageJson = {
+    status: "SUCCESS",
+    num_turns: 0,
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              { id: "gemini-5h", window: "5h", remaining_fraction: 0.6, reset_time: "2026-11-27T03:00:00Z" },
+              { id: "gemini-weekly", window: "weekly", remaining_fraction: 0.9, reset_time: "2026-12-03T09:00:00Z" },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              { id: "3p-5h", window: "5h", remaining_fraction: 1, reset_time: "1970-01-01T00:00:00Z" },
+              { id: "3p-weekly", window: "weekly", remaining_fraction: 0.75, reset_time: "2026-12-03T09:00:00Z" },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const agy = await createFakeAgy({ tier: "Google AI Pro", usageJson });
+  t.after(() => agy.instance.dispose());
+  await agy.send();
+  await within(agy.completed);
+  await until(() => Boolean(agy.instance.planUsage?.()), "planUsage never populated after turn");
+  const plan = agy.instance.planUsage!()!;
+  assert.equal(plan.plan, "Google AI Pro");
+  assert.deepEqual(
+    plan.windows.map((w) => [w.id, w.minutes, Number(w.used.toFixed(2)), w.resetsAt === null ? null : w.resetsAt]),
+    [
+      ["gemini-5h", 300, 0.4, Date.parse("2026-11-27T03:00:00Z")],
+      ["gemini-weekly", 10_080, 0.1, Date.parse("2026-12-03T09:00:00Z")],
+      ["3p-5h", 300, 0, null],
+      ["3p-weekly", 10_080, 0.25, Date.parse("2026-12-03T09:00:00Z")],
+    ],
+  );
+  // Unknown non-main account returns null
+  assert.equal(agy.instance.planUsage!("other"), null);
+
+  // GEMINI_API_KEY mode exits with code 2 from -p /usage: turn succeeds and planUsage stays null
+  const apiKey = await createFakeAgy({ usageExitCode: 2 });
+  t.after(() => apiKey.instance.dispose());
+  await apiKey.send();
+  await within(apiKey.completed);
+  assert.equal(apiKey.events.find((e) => e.type === "turn.completed")?.ok, true);
+  await wait(150);
+  assert.equal(apiKey.instance.planUsage?.(), null);
 });

@@ -145,7 +145,7 @@ test("the page's choices are kept on this device, and a damaged one falls back",
 
 const HOUR = 60 * 60_000;
 const NOW = Date.UTC(2026, 9, 23, 12);
-const KINDS: Record<string, string> = { codex: "codex", claude: "claudeAgent", "claude-2": "claudeAgent", gemini: "gemini", bloks: "bloks" };
+const KINDS: Record<string, string> = { codex: "codex", antigravity: "antigravity", claude: "claudeAgent", "claude-2": "claudeAgent", gemini: "gemini", bloks: "bloks" };
 const kindOf = (id: string) => KINDS[id] ?? id;
 const reading = (windows: PlanUsage["windows"], plan: string | null = "pro"): PlanUsage => ({ windows, plan, at: NOW - HOUR });
 
@@ -153,6 +153,7 @@ test("only an engine on a plan that priced none of its turns gets its plan shown
   const report = {
     byEngine: [
       row("codex", { turns: 5, input: 1_494_462, output: 6_318 }),
+      row("antigravity", { turns: 3, input: 42_000, output: 1_200 }),
       // Claude Code gives a price, so it has a cost to show
       row("claude", { turns: 9, input: 400, output: 90, cost: 1.2, priced: true }),
       // and a Claude Code turn with none failed before it said, which is
@@ -164,14 +165,18 @@ test("only an engine on a plan that priced none of its turns gets its plan shown
     ],
   };
   const uses = planUses(report, kindOf, {}, NOW);
-  assert.deepEqual(uses.map((u) => u.id), ["codex"]);
+  assert.deepEqual(uses.map((u) => u.id), ["codex", "antigravity"]);
   assert.equal(uses[0].tokens, 1_500_780, "the tokens are this workspace's, input and output");
   assert.equal(uses[0].turns, 5);
+  assert.equal(uses[1].tokens, 43_200);
+  assert.equal(uses[1].turns, 3);
   assert.equal(onPlan("codex"), true);
   assert.equal(onPlan("claudeAgent"), true);
+  assert.equal(onPlan("antigravity"), true);
   assert.equal(onPlan("gemini"), false);
   assert.equal(onPlan(undefined), false);
   assert.equal(planWithoutPrice("codex"), true);
+  assert.equal(planWithoutPrice("antigravity"), true);
   assert.equal(planWithoutPrice("claudeAgent"), false, "Claude Code prices its turns on a plan too");
   assert.deepEqual(planUses({ byEngine: [row("codex")] }, kindOf, {}, NOW), [], "an engine with no turns in view has nothing to say");
 });
@@ -181,17 +186,20 @@ test("Limits shows a plan for an engine installed here, read from, or that answe
   const instances = [
     engine("claude", "claudeAgent", "unavailable"),
     engine("codex", "codex", "unavailable"),
+    engine("antigravity", "antigravity", "unavailable"),
     engine("opencode", "acp", "available"),
   ];
-  // neither CLI is here and neither has answered: no plan card at all
+  // no plan CLI is here and none has answered: no plan card at all
   assert.deepEqual(planEngines(instances, {}, ["opencode"]), []);
   assert.deepEqual(planEngines(instances, null, null), [], "nor while the page is still reading");
   // installed, it has its card, saying nothing was heard yet
   assert.deepEqual(planEngines([engine("codex", "codex", "available")], {}, []).map((e) => e.instanceId), ["codex"]);
+  assert.deepEqual(planEngines([engine("antigravity", "antigravity", "available")], {}, []).map((e) => e.instanceId), ["antigravity"]);
   // gone since, its turns in view or its plan read keep the card
   assert.deepEqual(planEngines(instances, {}, ["codex"]).map((e) => e.instanceId), ["codex"]);
   const reading: PlanUsage = { windows: [{ id: "five_hour", minutes: 300, used: 0.2, resetsAt: NOW + 3_600_000 }], plan: "Max", at: NOW };
   assert.deepEqual(planEngines(instances, { claude: reading }, []).map((e) => e.instanceId), ["claude"]);
+  assert.deepEqual(planEngines(instances, { antigravity: reading }, []).map((e) => e.instanceId), ["antigravity"]);
   // an engine on no plan never gets one, installed or not
   assert.deepEqual(planEngines(instances, { opencode: reading }, ["opencode"]), []);
 });

@@ -1,7 +1,7 @@
 // The Usage page's Limits: what each thing an agent runs on has left.
 //
-// Three kinds, each in its own words. A Claude or ChatGPT plan's windows,
-// as the engine last said them (server/plan-usage.ts). Bloks AI's month
+// Three kinds, each in its own words. A Claude, ChatGPT, or Antigravity
+// plan's windows, as the engine last reported them (server/plan-usage.ts). Bloks AI's month
 // and day, as shares of the allowance and never as an amount, with the
 // way to top it up. And a spending limit the person sets on an engine
 // that runs on a key of their own (server/spend-limits.ts), the one

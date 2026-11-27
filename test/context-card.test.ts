@@ -79,6 +79,10 @@ test("a plan's windows are named by their length", () => {
   assert.equal(planWindowLabel({ id: "seven_day", minutes: 10_080 }), "Weekly limit");
   assert.equal(planWindowLabel({ id: "seven_day_opus", minutes: 10_080 }), "Weekly limit, Opus");
   assert.equal(planWindowLabel({ id: "seven_day_overage_included", minutes: 10_080 }), "Weekly limit, with extra usage");
+  assert.equal(planWindowLabel({ id: "gemini-5h", minutes: 300 }), "5-hour limit, Gemini");
+  assert.equal(planWindowLabel({ id: "gemini-weekly", minutes: 10_080 }), "Weekly limit, Gemini");
+  assert.equal(planWindowLabel({ id: "3p-5h", minutes: 300 }), "5-hour limit, Claude and GPT");
+  assert.equal(planWindowLabel({ id: "3p-weekly", minutes: 10_080 }), "Weekly limit, Claude and GPT");
   assert.equal(planWindowLabel({ id: "primary", minutes: 300 }), "5-hour limit");
   assert.equal(planWindowLabel({ id: "secondary", minutes: 1_440 }), "Daily limit");
   assert.equal(planWindowLabel({ id: "secondary", minutes: 43_200 }), "30-day limit");
@@ -130,4 +134,29 @@ test("the card lists each current window, shortest first, with the engine's warn
   assert.deepEqual(planRows(null, NOW), []);
   assert.equal(planName("pro"), "Pro");
   assert.equal(planName(" "), null);
+
+  // Antigravity's four buckets: untouched Claude and GPT pools (resetsAt: null) stay visible, shortest first
+  const agyRows = planRows(
+    {
+      windows: [
+        { id: "gemini-weekly", minutes: 10_080, used: 0.12, resetsAt: NOW + 4 * 24 * 60 * 60_000 },
+        { id: "gemini-5h", minutes: 300, used: 0.37, resetsAt: NOW + 2 * 60 * 60_000 },
+        { id: "3p-weekly", minutes: 10_080, used: 0, resetsAt: null },
+        { id: "3p-5h", minutes: 300, used: 0, resetsAt: null },
+      ],
+      plan: "Google AI Pro",
+      at: NOW,
+    },
+    NOW,
+    { locale: "en-US", timeZone: "UTC" },
+  );
+  assert.deepEqual(
+    agyRows.map((r) => [r.id, r.label, r.used, r.reset]),
+    [
+      ["gemini-5h", "5-hour limit, Gemini", "37% used", "Resets in 2 h"],
+      ["3p-5h", "5-hour limit, Claude and GPT", "0% used", null],
+      ["gemini-weekly", "Weekly limit, Gemini", "12% used", "Resets Tue 12:00 PM"],
+      ["3p-weekly", "Weekly limit, Claude and GPT", "0% used", null],
+    ],
+  );
 });
