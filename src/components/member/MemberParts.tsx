@@ -9,7 +9,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2, Lock, AlertTriangle, X } from "@/components/icons";
 import { BlokAvatar } from "@/components/Avatar";
-import { Markdownish } from "@/components/Markdown";
+import { Markdownish, withRoomMentions } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { shapeForBot, type BlokColor, type BlokShape } from "@/lib/mascot";
@@ -78,9 +78,11 @@ export interface TranscriptProps {
   /** The message the New line goes above, if anything came since this
    * person last read (src/lib/lastRead.ts). */
   newFrom?: string | null;
+  /** Room participant names whose @mentions draw as inline pills. */
+  mentions?: readonly string[];
 }
 
-export function Transcript({ messages, me, people, owner, shared, agentName, streaming, busy, header, empty, onAnswer, threadId = null, agentFace, nameOf, onRead, newFrom = null }: TranscriptProps) {
+export function Transcript({ messages, me, people, owner, shared, agentName, streaming, busy, header, empty, onAnswer, threadId = null, agentFace, nameOf, onRead, newFrom = null, mentions }: TranscriptProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const seen = useRef(new Set<string>());
@@ -172,6 +174,7 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
                 place={place?.get(m.id)}
                 receipts={receiptsFor(m.id)}
                 agentFace={agentFace}
+                mentions={mentions}
               />
             );
           }} />,
@@ -186,7 +189,7 @@ export function Transcript({ messages, me, people, owner, shared, agentName, str
               name={agentName(undefined)}
               at={Date.now()}
               rich={streaming.length > 400 || richText(streaming)}
-              bubble={<Markdownish text={streaming} streaming />}
+              bubble={<Markdownish text={streaming} mentions={mentions} streaming />}
             />
           </div>
         ) : streaming ? (
@@ -217,6 +220,7 @@ function Line({
   place,
   receipts,
   agentFace,
+  mentions,
 }: {
   message: MemberMessage;
   fresh: boolean;
@@ -230,6 +234,7 @@ function Line({
   place?: { first: boolean; last: boolean };
   receipts?: React.ReactNode;
   agentFace?: (id: string | undefined) => React.ReactNode;
+  mentions?: readonly string[];
 }) {
   // several people here: every message a bubble, as the owner's own app
   // draws a room (src/components/chat/Group.tsx)
@@ -253,7 +258,11 @@ function Line({
         bubble={
           <>
             {m.onBehalf && <div className="mb-1 text-caption text-muted-foreground">{t("memberParts.onBehalf", { name: m.onBehalf.name })}</div>}
-            {human ? m.text : <Markdownish text={m.text ?? ""} />}
+            {human ? (
+              withRoomMentions(m.text ?? "", mentions, "", { onAccent: mine, keyPrefix: `mm-${m.id}` })
+            ) : (
+              <Markdownish text={m.text ?? ""} mentions={mentions} />
+            )}
           </>
         }
         under={mine && m.queued ? <span className="mt-1 px-1 text-caption text-muted-foreground">{t("memberParts.waitingForTheReplyBefore")}</span> : undefined}

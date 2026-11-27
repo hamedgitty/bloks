@@ -39,6 +39,7 @@ import {
   type Attachment,
 } from "@/lib/attachments";
 import { heldLine } from "@/lib/pendingImages";
+import { mentionRuns } from "@/lib/roomMentions";
 import { AttachmentChips, usePendingImages } from "@/components/composer/Attachments";
 import {
   acceptDraft,
@@ -122,30 +123,6 @@ function useAutoSize(value: string) {
     shadeEdges(el);
   }, [value, tall]);
   return ref;
-}
-
-/** Where each @name in the words is, longest names first and each span
- * used once, as the server reads them, for the marks behind the text. */
-function mentionRuns(text: string, names: readonly string[]): Array<{ text: string; mention: boolean }> {
-  const lower = text.toLowerCase();
-  const taken: Array<[number, number]> = [];
-  for (const name of [...new Set(names)].filter(Boolean).sort((a, b) => b.length - a.length)) {
-    const needle = `@${name.toLowerCase()}`;
-    for (let at = lower.indexOf(needle); at !== -1; at = lower.indexOf(needle, at + needle.length)) {
-      const end = at + needle.length;
-      if (!taken.some(([s, e]) => at < e && end > s)) taken.push([at, end]);
-    }
-  }
-  taken.sort((a, b) => a[0] - b[0]);
-  const runs: Array<{ text: string; mention: boolean }> = [];
-  let from = 0;
-  for (const [s, e] of taken) {
-    if (s > from) runs.push({ text: text.slice(from, s), mention: false });
-    runs.push({ text: text.slice(s, e), mention: true });
-    from = e;
-  }
-  if (from < text.length) runs.push({ text: text.slice(from), mention: false });
-  return runs;
 }
 
 /** What the next message answers, inside the box with the files: the

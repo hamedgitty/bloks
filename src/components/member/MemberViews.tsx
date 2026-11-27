@@ -398,6 +398,11 @@ export function RoomView({
           }}
           nameOf={(id) => told.people[id] ?? nameOf?.(id) ?? t("memberViews.someone")}
           onRead={memberApi.read}
+          mentions={[
+            ...data.room.agents.map((a) => a.name),
+            ...data.room.people.map((p) => p.name),
+            ...(data.room.owner.name ? [data.room.owner.name] : []),
+          ]}
           streaming=""
           busy={busy}
           header={

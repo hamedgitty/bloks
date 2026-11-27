@@ -592,7 +592,7 @@ function RoomMessage({
         bubble={
           <>
             {message.replyTo && <ReplyContext replyTo={message.replyTo} onAccent />}
-            <UserText text={message.text ?? ""} />
+            <UserText text={message.text ?? ""} mentions={names} onAccent />
           </>
         }
         under={
