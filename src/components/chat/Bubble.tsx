@@ -18,7 +18,7 @@ import { messageRuns } from "@/lib/mentions";
 import { MentionChip, MentionNotes } from "./Mentions";
 import { Mic } from "@/components/icons";
 import { MessageActionBar, Reactions, ReplyContext, useTapToShow, type ReplyDraft } from "@/components/MessageActions";
-import { Markdownish, withHighlight } from "@/components/Markdown";
+import { Markdownish, withRoomMentions } from "@/components/Markdown";
 import { cn } from "@/lib/cn";
 import { goalNoteForPerson } from "@/lib/goalNote";
 import { redoLine, type RedoPreview } from "@/lib/redo";
@@ -93,7 +93,19 @@ function viaLabel(message: Message): string {
  * back as thumbnails, files as small name chips, and what remains is
  * the sentence the user actually typed.
  */
-export function UserText({ text, highlight }: { text: string; highlight?: string }) {
+export function UserText({
+  text,
+  highlight,
+  mentions,
+  onAccent,
+}: {
+  text: string;
+  highlight?: string;
+  /** Room participant names whose @mentions draw as inline pills. */
+  mentions?: readonly string[];
+  /** Drawn on the reader's accent bubble instead of a neutral surface. */
+  onAccent?: boolean;
+}) {
   const { display, images, files, voice } = splitAttachments(text);
   return (
     <>
@@ -133,10 +145,12 @@ export function UserText({ text, highlight }: { text: string; highlight?: string
           ))}
         </div>
       )}
-      {withHighlight(
-        // each @ link the words carry is a chip that opens what it names
-        messageRuns(display).map((run, i) => ("mention" in run ? <MentionChip key={`m${i}`} mention={run.mention} /> : run.text)),
-        highlight ?? "",
+      {/* each @ link the words carry is a chip that opens what it names, and
+          in a room each @name draws as a mention pill */}
+      {messageRuns(display).flatMap((run, i) =>
+        "mention" in run
+          ? [<MentionChip key={`m${i}`} mention={run.mention} />]
+          : withRoomMentions(run.text, mentions, highlight ?? "", { onAccent, keyPrefix: `u${i}` }),
       )}
     </>
   );

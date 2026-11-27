@@ -22,6 +22,7 @@ import { parseInline, type InlineToken } from "@/lib/inlineMarkdown";
 import { highlight as colourCode, type Token, type TokenKind } from "@/lib/highlight";
 import { cn } from "@/lib/cn";
 import { splitHighlight } from "@/lib/find";
+import { mentionRuns } from "@/lib/roomMentions";
 import { looksShared } from "@/lib/sharedFile";
 import { TableScroll } from "./TableScroll";
 import { SharedFileLink } from "./Artifacts";
@@ -40,7 +41,7 @@ const HIT = "rounded-[3px] bg-warning/40 px-px text-inherit";
 /** Wraps every occurrence of the query in the plain-text parts of an
  * already-rendered line. Elements are left alone: breaking a code span
  * to paint it yellow trades a working transcript for a search result. */
-export function withHighlight(nodes: React.ReactNode[], query: string): React.ReactNode[] {
+export function withHighlight(nodes: React.ReactNode[], query: string, keyPrefix = "h"): React.ReactNode[] {
   if (!query.trim()) return nodes;
   const out: React.ReactNode[] = [];
   nodes.forEach((node, i) => {
@@ -51,7 +52,7 @@ export function withHighlight(nodes: React.ReactNode[], query: string): React.Re
     for (const [j, part] of splitHighlight(node, query).entries()) {
       out.push(
         part.hit ? (
-          <mark key={`h-${i}-${j}`} className={HIT}>
+          <mark key={`${keyPrefix}-${i}-${j}`} className={HIT}>
             {part.text}
           </mark>
         ) : (
@@ -64,31 +65,46 @@ export function withHighlight(nodes: React.ReactNode[], query: string): React.Re
 }
 
 const INLINE_CODE = "rounded-[5px] bg-foreground/[0.06] px-[0.3em] py-px font-mono text-body";
+// Mention pills share one shape on both sides of a room: a soft accent
+// wash on neutral bubbles, and a frosted glass chip with a hairline ring
+// on the reader's accent fill so it stays crisp instead of muddying the
+// bubble colour in light or dark mode.
+const ROOM_MENTION_PILL =
+  "rounded-[6px] bg-brand-ink/[0.12] px-1.5 py-px font-medium text-brand-ink box-decoration-clone dark:bg-brand-ink/[0.16]";
+const ROOM_MENTION_PILL_ON_ACCENT =
+  "rounded-[6px] bg-brand-foreground/[0.16] px-1.5 py-px font-medium text-brand-foreground ring-1 ring-inset ring-brand-foreground/25 box-decoration-clone";
+
+/** Splits plain text into text and room @mention pills, painting any
+ * search highlight inside both so searching inside a name keeps the pill
+ * whole. */
+export function withRoomMentions(
+  text: string,
+  mentions: readonly string[] | undefined,
+  highlight = "",
+  { onAccent = false, keyPrefix = "rm" }: { onAccent?: boolean; keyPrefix?: string } = {},
+): React.ReactNode[] {
+  if (!mentions?.length) return withHighlight([text], highlight, `${keyPrefix}-h`);
+  const pill = onAccent ? ROOM_MENTION_PILL_ON_ACCENT : ROOM_MENTION_PILL;
+  return mentionRuns(text, mentions).flatMap((run, i) =>
+    run.mention
+      ? [
+          <span key={`${keyPrefix}-${i}`} className={pill}>
+            {withHighlight([run.text], highlight, `${keyPrefix}-${i}-h`)}
+          </span>,
+        ]
+      : withHighlight([run.text], highlight, `${keyPrefix}-${i}-h`),
+  );
+}
 
 /** Bold, code and links, as elements, with the search highlight painted
  * into the text of each, links and bold included. */
-function inlineMd(text: string, keyBase: string, highlight: string, mentions?: RegExp | null): React.ReactNode[] {
+function inlineMd(text: string, keyBase: string, highlight: string, mentions?: readonly string[]): React.ReactNode[] {
   const render = (tokens: InlineToken[], key: string): React.ReactNode[] =>
     tokens.flatMap((token, i): React.ReactNode[] => {
       const k = `${key}-${i}`;
       switch (token.kind) {
         case "text":
-          return withHighlight([token.text], highlight).flatMap((node, j) =>
-            typeof node !== "string"
-              ? [<span key={`${k}-${j}`}>{node}</span>]
-              : mentions
-                ? node.split(mentions).map((part, m) =>
-                    // split with a capture group puts each mention at an odd index
-                    m % 2 === 1 ? (
-                      <span key={`${k}-${j}-${m}`} className="font-medium text-brand-ink">
-                        {part}
-                      </span>
-                    ) : (
-                      part
-                    ),
-                  )
-                : [node],
-          );
+          return withRoomMentions(token.text, mentions, highlight, { keyPrefix: k });
         case "code":
           // a path to a file in an agent's deliverables, written in
           // backticks the way agents tend to, opens like a link to it
@@ -173,7 +189,7 @@ export function InlineMarkdown({ text }: { text: string }) {
  * Scrolls inside its own box rather than widening the reply: a
  * six-column comparison should not decide how wide the transcript is.
  */
-function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: string }) {
+function MarkdownTable({ block, highlight, mentions }: { block: TableBlock; highlight: string; mentions?: readonly string[] }) {
   const align = (i: number) => {
     const a = block.aligns[i] ?? "left";
     return a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left";
@@ -185,7 +201,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
           <tr className="border-b bg-foreground/[0.03]">
             {block.columns.map((column, i) => (
               <th key={i} className={cn("px-3 py-2 font-semibold whitespace-nowrap", align(i))}>
-                {inlineMd(column, `th${i}`, highlight)}
+                {inlineMd(column, `th${i}`, highlight, mentions)}
               </th>
             ))}
           </tr>
@@ -195,7 +211,7 @@ function MarkdownTable({ block, highlight }: { block: TableBlock; highlight: str
             <tr key={r} className="border-b last:border-b-0">
               {row.map((cell, c) => (
                 <td key={c} className={cn("px-3 py-2 align-top tabular-nums", align(c))}>
-                  {inlineMd(cell, `td${r}-${c}`, highlight)}
+                  {inlineMd(cell, `td${r}-${c}`, highlight, mentions)}
                 </td>
               ))}
             </tr>
@@ -387,18 +403,11 @@ export function CodeView({ lang, code }: { lang: string; code: string }) {
   return <MarkdownCode block={{ kind: "code", lang, code }} highlight="" />;
 }
 
-/** The pattern that picks out a room's @mentions, or null for none. */
-function mentionPattern(names: string[] | undefined): RegExp | null {
-  if (!names?.length) return null;
-  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return new RegExp(`(@(?:${escaped.join("|")}))`, "gi");
-}
-
 /** Lines that belong together, with the breaks the model chose kept. */
-function linesOf(lines: string[], key: string, highlight: string, names: RegExp | null): React.ReactNode[] {
+function linesOf(lines: string[], key: string, highlight: string, mentions?: readonly string[]): React.ReactNode[] {
   return lines.flatMap((line, i) => [
     ...(i > 0 ? [<br key={`${key}-br${i}`} />] : []),
-    ...inlineMd(line, `${key}-${i}`, highlight, names),
+    ...inlineMd(line, `${key}-${i}`, highlight, mentions),
   ]);
 }
 
@@ -410,13 +419,13 @@ function MarkdownList({
   depth,
   keyBase,
   highlight,
-  names,
+  mentions,
 }: {
   list: List;
   depth: number;
   keyBase: string;
   highlight: string;
-  names: RegExp | null;
+  mentions?: readonly string[];
 }) {
   const Tag = list.ordered ? "ol" : "ul";
   return (
@@ -452,7 +461,7 @@ function MarkdownList({
           )}
           {item.task !== null && <span className="sr-only">{`${item.task ? t("markdown.taskDone") : t("markdown.taskToDo")} `}</span>}
           <span className={cn(item.task && "text-muted-foreground")}>
-            {linesOf(item.lines, `${keyBase}-${i}`, highlight, names)}
+            {linesOf(item.lines, `${keyBase}-${i}`, highlight, mentions)}
           </span>
           {item.children.map((child, c) => (
             <MarkdownList
@@ -461,7 +470,7 @@ function MarkdownList({
               depth={depth + 1}
               keyBase={`${keyBase}-${i}-${c}`}
               highlight={highlight}
-              names={names}
+              mentions={mentions}
             />
           ))}
         </li>
@@ -481,28 +490,26 @@ function Prose({
   block,
   keyBase,
   highlight,
-  names,
   mentions,
 }: {
   block: ProseBlock;
   keyBase: string;
   highlight: string;
-  names: RegExp | null;
-  mentions?: string[];
+  mentions?: readonly string[];
 }) {
   switch (block.kind) {
     case "heading": {
       const Tag = `h${block.level}` as "h1";
       return (
         <Tag className={cn(HEADING_CLASS[block.level], "text-balance text-foreground first:mt-0 [:is(h1,h2,h3,h4)+&]:mt-2")}>
-          {inlineMd(block.text, keyBase, highlight, names)}
+          {inlineMd(block.text, keyBase, highlight, mentions)}
         </Tag>
       );
     }
     case "paragraph":
       // a long unbroken run (a hash, a path, a URL) breaks where it must
       // instead of pushing the whole transcript sideways
-      return <p className={cn(FLOW, "text-pretty [overflow-wrap:anywhere]")}>{linesOf(block.lines, keyBase, highlight, names)}</p>;
+      return <p className={cn(FLOW, "text-pretty [overflow-wrap:anywhere]")}>{linesOf(block.lines, keyBase, highlight, mentions)}</p>;
     case "rule":
       return <hr className="my-6 border-border first:mt-0" />;
     case "quote":
@@ -516,7 +523,7 @@ function Prose({
         </blockquote>
       );
     case "list":
-      return <MarkdownList list={block} depth={0} keyBase={keyBase} highlight={highlight} names={names} />;
+      return <MarkdownList list={block} depth={0} keyBase={keyBase} highlight={highlight} mentions={mentions} />;
   }
 }
 
@@ -524,7 +531,7 @@ interface MarkdownishProps {
   text: string;
   highlight?: string;
   /** Names whose @mentions are picked out, in a room. */
-  mentions?: string[];
+  mentions?: readonly string[];
   /** The reply is still arriving: an interface answer in it is drawn as
    * it grows, and waits to be clicked until it is done. */
   streaming?: boolean;
@@ -548,14 +555,13 @@ export const Markdownish = memo(
 );
 
 function MarkdownishBlocks({ text, highlight = "", mentions, streaming }: MarkdownishProps) {
-  const names = mentionPattern(mentions);
   // an answer's own markdown draws a fence of its own as code
   const nested = useInsideGenUi();
   return (
     <>
       {splitBlocks(text).flatMap((block, b) =>
         block.kind === "table" ? (
-          [<MarkdownTable key={`t${b}`} block={block} highlight={highlight} />]
+          [<MarkdownTable key={`t${b}`} block={block} highlight={highlight} mentions={mentions} />]
         ) : block.kind === "code" && isOpenUiLang(block.lang) && !nested ? (
           // An answer drawn as interface (src/components/genui). The
           // gap above it is the one every block keeps.
@@ -573,7 +579,6 @@ function MarkdownishBlocks({ text, highlight = "", mentions, streaming }: Markdo
               block={prose}
               keyBase={`${b}-${p}`}
               highlight={highlight}
-              names={names}
               mentions={mentions}
             />
           ))
