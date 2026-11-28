@@ -25457,6 +25457,9 @@ function readBody(req: IncomingMessage, maxBytes?: number): Promise<any> {
     let data = "";
     const chunks: Buffer[] = [];
     let bytes = 0;
+    // An ordinary route's body is decoded as it streams, so a character
+    // whose bytes arrive in two chunks is kept whole.
+    if (maxBytes === undefined) req.setEncoding("utf8");
     req.on("data", (c) => {
       if (maxBytes === undefined) data += c;
       else {
